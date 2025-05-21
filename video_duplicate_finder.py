@@ -313,14 +313,17 @@ class VideoFaceGroupWorker(QObject):
         paths = []
         total = len(video_files)
         # 並列で顔特徴量抽出
+        # ThreadPoolExecutorを使い、複数の動画ファイルから同時に顔特徴量を抽出する
         with concurrent.futures.ThreadPoolExecutor(max_workers=get_num_workers(4)) as executor:
             futures = [executor.submit(self._extract_video_face_encoding, f) for f in video_files]
+            # as_completedで完了した順に結果を取得
             for idx, future in enumerate(concurrent.futures.as_completed(futures)):
                 res = future.result()
                 if res:
                     f, encoding = res
                     paths.append(f)
                     encodings.append(encoding)
+                # 進捗をUIに通知
                 self.progress.emit(idx + 1, total)
 
         if not encodings:
@@ -785,33 +788,6 @@ class VideoDuplicateFinder(QWidget):
 
     def open_folder(self, folder_path):
         QDesktopServices.openUrl(QUrl.fromLocalFile(folder_path))
-
-# このメッセージの意味：
-# face_recognitionライブラリを使うには、顔認識用の学習済みモデル（face_recognition_models）が必要です。
-# それがインストールされていないため、エラーが出ています。
-#
-# 解決方法：
-# コマンドプロンプトで下記のコマンドを実行してください。
-#   pip install git+https://github.com/ageitgey/face_recognition_models
-# これで必要なモデルデータがインストールされ、face_recognitionが使えるようになります。
-
-# face_recognition_modelsをインストールしても
-# 「Please install `face_recognition_models` ...」と出る場合の主な原因：
-
-# 1. Pythonのバージョンや仮想環境が複数あり、face_recognitionとface_recognition_modelsが別の環境にインストールされている
-# 2. pipでインストールした場所と、実行しているpython.exeの場所が違う
-# 3. face_recognition_modelsのインストールが失敗している
-# 4. 権限不足やパスの問題でPythonがmodelsを見つけられない
-
-# 対策例：
-# ・「python -m pip install ...」で、実行しているPython環境にインストールする
-# ・「pip show face_recognition_models」「pip show face_recognition」でパスを確認
-# ・「where python」「where pip」で実際に使われているパスを確認
-# ・仮想環境を使っている場合は、必ずその環境をアクティブにしてからpip installする
-# ・インストール後にPythonを再起動する
-
-# 例:
-#   python -m pip install git+https://github.com/ageitgey/face_recognition_models
 
 if __name__ == "__main__":
     try:
