@@ -10,24 +10,18 @@
 #   python video_duplicate_finder.py
 # （カレントディレクトリがこのファイルの場所になっていることを確認してください）
 
-import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), "imagehash"))
+import sys
 import cv2
+import numpy as np
 from PIL import Image
-from PyQt5.QtWidgets import (
-    QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
-    QFileDialog, QListWidget, QMessageBox, QScrollArea, QGroupBox, QProgressBar,
-    QInputDialog, QDialog, QGridLayout
-)
-from PyQt5.QtGui import QPixmap, QImage, QCursor
-from PyQt5.QtCore import Qt, QUrl, QThread, pyqtSignal, QObject
-from PyQt5.QtGui import QDesktopServices
 import imagehash
-import subprocess
 import concurrent.futures
+from cache_util import save_cache, load_cache
+import tempfile
+from shutil import move as shutil_move
+import hashlib
 
-# --- ここから追加: send2trash, face_recognition の定義 ---
 try:
     from send2trash import send2trash
     SEND2TRASH_AVAILABLE = True
@@ -39,827 +33,567 @@ try:
     import face_recognition
 except ImportError:
     face_recognition = None
-# --- 追加ここまで ---
 
-# --- ここから追加: CPUコア数取得とワーカー数決定 ---
-def get_cpu_count():
-    """利用可能なCPUコア数を返す（Noneの場合は1を返す）"""
-    count = os.cpu_count()
-    return count if count and count > 0 else 1
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
+    QFileDialog, QListWidget, QMessageBox, QScrollArea, QGroupBox, QProgressBar,
+    QInputDialog, QDialog, QGridLayout, QLineEdit, QDialogButtonBox, QListWidgetItem
+)
+from PyQt5.QtGui import QPixmap, QImage, QCursor, QIcon
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject, QSize
 
-def get_num_workers(max_workers=None):
-    """
-    並列処理用のワーカー数を返す。
-    max_workersを指定した場合はその最大値を超えない。
-    """
-    cpu_count = get_cpu_count()
-    if max_workers is not None:
-        return min(cpu_count, max_workers)
-    return cpu_count
-# --- 追加ここまで ---
+# --- パス正規化 ---
+def normalize_path(path):
+    # 全角「¥」やスラッシュを半角バックスラッシュに統一し、osの正規化も行う
+    if not isinstance(path, str):
+        return path
+    path = path.replace("\uFFE5", "\\")  # 全角→半角バックスラッシュ
+    path = path.replace("¥", "\\")        # 万が一の全角
+    path = path.replace("/", os.sep).replace("\\", os.sep)
+    return os.path.normpath(path)
 
-def get_video_files(folder):
-    exts = ('.mp4', '.avi', '.mov', '.mkv', '.wmv')
-    video_files = []
-    for root, dirs, files in os.walk(folder):
-        for f in files:
+# --- ファイル収集 ---
+def collect_files(folder, exts):
+    files = []
+    for root, dirs, fs in os.walk(folder):
+        for f in fs:
             if f.lower().endswith(exts):
-                video_files.append(os.path.join(root, f))
-    return video_files
+                full_path = os.path.join(root, f)
+                files.append(normalize_path(full_path))
+    return files
 
-def get_video_hash(filepath, frame_count=5):
-    cap = cv2.VideoCapture(filepath)
-    length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    hashes = []
-    if length == 0 or frame_count == 0:
-        cap.release()
-        return hashes
-    for i in range(frame_count):
-        frame_no = int(length * i / (frame_count - 1)) if frame_count > 1 else 0
-        frame_no = min(frame_no, length - 1)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
-        ret, frame = cap.read()
-        if not ret:
-            continue
-        img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(img)
-        hash_val = imagehash.phash(pil_img)
-        hashes.append(hash_val)
-    cap.release()
-    return hashes
-
-def are_videos_similar(hashes1, hashes2, threshold=8):
-    if len(hashes1) != len(hashes2) or not hashes1:
-        return False
-    dist = sum(int(h1 - h2) for h1, h2 in zip(hashes1, hashes2))
-    return dist < threshold
-
-def group_similar_videos(video_files, progress_callback=None):
-    hashes = []
-    total = len(video_files)
-    for idx, f in enumerate(video_files):
+# --- 特徴量抽出 ---
+def get_image_phash(filepath, folder=None):
+    filepath = normalize_path(filepath)
+    def calc_func(path):
         try:
-            h = get_video_hash(f)
-            hashes.append((f, h))
+            img = Image.open(path).convert("RGB")
+            return imagehash.phash(img)
         except Exception:
-            continue
-        if progress_callback:
-            progress_callback(idx + 1, total)
+            return None
+    return get_features_with_cache(filepath, calc_func, folder)
+
+def get_video_phash(filepath, frame_count=7, folder=None):
+    filepath = normalize_path(filepath)
+    def calc_func(path):
+        cap = cv2.VideoCapture(path)
+        length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        hashes = []
+        if length == 0 or frame_count == 0:
+            cap.release()
+            return None
+        indices = set([0, length-1, length//2])
+        if frame_count > 3:
+            for i in range(frame_count-3):
+                idx = int(length * (i+1)/(frame_count-2))
+                indices.add(min(max(0, idx), length-1))
+        indices = sorted(indices)
+        for frame_no in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            try:
+                img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pil_img = Image.fromarray(img)
+                hash_val = imagehash.phash(pil_img)
+                hashes.append(hash_val)
+            except Exception:
+                continue
+        cap.release()
+        if not hashes:
+            return None
+        return hashes
+    return get_features_with_cache(filepath, calc_func, folder)
+
+def get_face_encoding(filepath):
+    filepath = normalize_path(filepath)
+    def calc_func(path):
+        img = Image.open(path).convert("RGB")
+        arr = np.array(img)
+        if face_recognition:
+            faces = face_recognition.face_encodings(arr)
+            return faces[0] if faces else np.zeros(128)
+        else:
+            return np.zeros(128)
+    return get_features_with_cache(filepath, calc_func)
+
+def get_video_face_encoding(filepath, sample_frames=7):
+    filepath = normalize_path(filepath)
+    def calc_func(path):
+        cap = cv2.VideoCapture(path)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if frame_count == 0:
+            cap.release()
+            return None
+        indices = np.linspace(0, frame_count-1, sample_frames, dtype=int)
+        encodings = []
+        for idx in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            if face_recognition:
+                faces = face_recognition.face_encodings(rgb)
+                if faces:
+                    encodings.append(faces[0])
+        cap.release()
+        if encodings:
+            return np.mean(encodings, axis=0)
+        else:
+            return None
+    return get_features_with_cache(filepath, calc_func)
+
+def get_cache_files(folder):
+    # フォルダパスからハッシュ値を生成し、キャッシュファイル名・キー名を返す
+    folder = os.path.abspath(folder)
+    h = hashlib.sha1(folder.encode('utf-8')).hexdigest()[:12]
+    cache_file = f".video_cache_{h}.enc"
+    key_file = f".video_cache_{h}.key"
+    return cache_file, key_file
+
+# --- キャッシュ ---
+def get_features_with_cache(filepath, calc_func, folder=None):
+    filepath = normalize_path(filepath)
+    import pickle
+    import time
+    if folder is None:
+        folder = os.path.dirname(filepath)
+    cache_file, key_file = get_cache_files(folder)
+    from cache_util import save_cache, load_cache
+    # キャッシュ読み込み（リトライ付き、truncated時はキャッシュファイル削除）
+    cache = None
+    for i in range(5):
+        try:
+            cache_bytes = load_cache(cache_file, key_file)
+            if cache_bytes is not None:
+                try:
+                    cache = pickle.loads(cache_bytes)
+                    break
+                except Exception as e:
+                    print(f"[キャッシュデコードエラー] {e}")
+                    # pickle data was truncated などは一時的な書き込み競合の可能性が高いが、
+                    # 5回目のリトライでも直らなければキャッシュファイルを削除して再生成
+                    if i == 4:
+                        try:
+                            os.remove(cache_file)
+                            print(f"[キャッシュ破損] {cache_file} を削除しました")
+                        except Exception:
+                            pass
+                        cache = {}
+                        break
+                    time.sleep(0.3)
+                    continue
+            else:
+                cache = {}
+                break
+        except FileNotFoundError:
+            # キャッシュファイルが存在しないのは正常なので何も出力しない
+            cache = {}
+            break
+        except Exception as e:
+            print(f"[キャッシュ読み込み予期せぬエラー] {e}")
+            cache = {}
+            break
+    if cache is None:
+        cache = {}
+    if filepath in cache:
+        return cache[filepath]
+    result = calc_func(filepath)
+    if result is not None:
+        cache[filepath] = result
+        for _ in range(5):
+            try:
+                save_cache(cache_file, pickle.dumps(cache))
+                break
+            except Exception as e:
+                print(f"[キャッシュ書き込み予期せぬエラー] {e}")
+                time.sleep(0.2)
+    return result
+
+# --- グループ化 ---
+def group_by_phash(file_hashes, threshold=8):
     groups = []
     used = set()
-    for i, (f1, h1) in enumerate(hashes):
-        if f1 in used:
+    for i, (f1, h1) in enumerate(file_hashes):
+        if f1 in used or h1 is None:
             continue
         group = [f1]
-        for j, (f2, h2) in enumerate(hashes):
-            if i != j and f2 not in used and are_videos_similar(h1, h2):
-                group.append(f2)
-                used.add(f2)
+        for j, (f2, h2) in enumerate(file_hashes):
+            if i != j and f2 not in used and h2 is not None:
+                # どちらかがlistなら動画同士のみ比較、画像同士のみ比較
+                if isinstance(h1, list) and isinstance(h2, list):
+                    minlen = min(len(h1), len(h2))
+                    try:
+                        dist = sum(h1[k] - h2[k] if hasattr(h1[k], '__sub__') else abs(int(h1[k]) - int(h2[k])) for k in range(minlen))
+                        dist = abs(dist)
+                    except Exception:
+                        continue
+                    if dist < threshold * minlen:
+                        group.append(f2)
+                        used.add(f2)
+                elif not isinstance(h1, list) and not isinstance(h2, list):
+                    try:
+                        # imagehashオブジェクト同士ならabs(h1 - h2)でOK
+                        if hasattr(h1, '__sub__') and hasattr(h2, '__sub__'):
+                            diff = abs(h1 - h2)
+                        else:
+                            diff = abs(int(h1) - int(h2))
+                        if diff < threshold:
+                            group.append(f2)
+                            used.add(f2)
+                    except Exception:
+                        continue
         used.add(f1)
         if len(group) > 1:
             groups.append(group)
     return groups
 
-def get_video_thumbnail(filepath):
+def group_by_face(encodings, paths, threshold=0.6):
+    from sklearn.metrics.pairwise import cosine_distances
+    groups = []
+    used = set()
+    for i, (f1, e1) in enumerate(zip(paths, encodings)):
+        if f1 in used or e1 is None:
+            continue
+        group = [f1]
+        for j, (f2, e2) in enumerate(zip(paths, encodings)):
+            if i != j and f2 not in used and e2 is not None:
+                dist = cosine_distances([e1], [e2])[0][0]
+                if dist < threshold:
+                    group.append(f2)
+                    used.add(f2)
+        used.add(f1)
+        if len(group) > 1:
+            groups.append(group)
+    return groups
+
+# --- サムネイル生成 ---
+def get_image_thumbnail(filepath, size=(240,240)):
+    filepath = normalize_path(filepath)
+    try:
+        img = Image.open(filepath).convert("RGB")
+        img.thumbnail(size)
+        return img
+    except Exception:
+        return None
+
+def get_video_thumbnail(filepath, size=(240,240)):
+    filepath = normalize_path(filepath)
     cap = cv2.VideoCapture(filepath)
     ret, frame = cap.read()
     cap.release()
     if not ret:
         return None
     img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    h, w, ch = img.shape
-    bytes_per_line = ch * w
-    qimg = QImage(img.data, w, h, bytes_per_line, QImage.Format_RGB888)
-    # サムネイルサイズを240x240に変更
-    pixmap = QPixmap.fromImage(qimg).scaled(240, 240, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-    return pixmap
+    pil_img = Image.fromarray(img)
+    pil_img.thumbnail(size)
+    return pil_img
 
-def get_image_files(folder):
-    exts = ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff')
-    image_files = []
-    for root, dirs, files in os.walk(folder):
-        for f in files:
-            if f.lower().endswith(exts):
-                image_files.append(os.path.join(root, f))
-    return image_files
+# --- ゴミ箱移動 ---
+def move_to_trash(filepath):
+    filepath = normalize_path(filepath)
+    if SEND2TRASH_AVAILABLE:
+        send2trash(filepath)
+    else:
+        os.remove(filepath)
 
-def get_image_thumbnail(filepath):
-    try:
-        img = Image.open(filepath)
-        img = img.convert("RGB")
-        # サムネイルサイズを240x240に変更
-        img.thumbnail((240, 240))
-        data = img.tobytes("raw", "RGB")
-        qimg = QImage(data, img.width, img.height, QImage.Format_RGB888)
-        pixmap = QPixmap.fromImage(qimg)
-        return pixmap
-    except Exception:
-        return None
-
-def get_image_hash(filepath):
-    try:
-        img = Image.open(filepath)
-        img = img.convert("RGB")
-        return imagehash.phash(img)
-    except Exception:
-        return None
-
-def group_similar_images(image_files, progress_callback=None):
-    hashes = []
-    total = len(image_files)
-    for idx, f in enumerate(image_files):
-        h = get_image_hash(f)
-        if h is not None:
-            hashes.append((f, h))
-        if progress_callback:
-            progress_callback(idx + 1, total)
-    groups = []
-    used = set()
-    for i, (f1, h1) in enumerate(hashes):
-        if f1 in used:
-            continue
-        group = [f1]
-        for j, (f2, h2) in enumerate(hashes):
-            # --- ここを修正: h1/h2がNoneでないことを明示的にチェック ---
-            if i != j and f2 not in used and h1 is not None and h2 is not None and abs(h1 - h2) < 8:
-                group.append(f2)
-                used.add(f2)
-        used.add(f1)
-        if len(group) > 1:
-            groups.append(group)
-    return groups
-
-class FaceGroupWorker(QObject):
-    finished = pyqtSignal(list)
-    progress = pyqtSignal(int, int)
-    error = pyqtSignal(str)
-
-    def __init__(self, image_files):
-        super().__init__()
-        self.image_files = image_files
-
-    def run(self):
-        try:
-            groups = self._analyze_and_group_faces(self.image_files)
-            self.finished.emit(groups)
-        except Exception as e:
-            self.error.emit(str(e))
-
-    def _extract_face_encoding(self, f):
-        try:
-            img = face_recognition.load_image_file(f)
-            faces = face_recognition.face_encodings(img)
-            if faces:
-                return (f, faces[0])
-        except Exception:
-            pass
-        return None
-
-    def _analyze_and_group_faces(self, image_files):
-        if face_recognition is None:
-            raise RuntimeError("face_recognitionライブラリが必要です。")
-        encodings = []
-        paths = []
-        total = len(image_files)
-        results = []
-        # 並列で顔特徴量抽出
-        with concurrent.futures.ProcessPoolExecutor(max_workers=get_num_workers(8)) as executor:
-            results = list(executor.map(self._extract_face_encoding, image_files))
-        for res in results:
-            if res:
-                f, encoding = res
-                encodings.append(encoding)
-                paths.append(f)
-        groups = []
-        used = set()
-        for i, enc1 in enumerate(encodings):
-            if i in used:
-                continue
-            group = [paths[i]]
-            for j, enc2 in enumerate(encodings):
-                if i != j and j not in used:
-                    match = face_recognition.compare_faces([enc1], enc2, tolerance=0.5)[0]
-                    if match:
-                        group.append(paths[j])
-                        used.add(j)
-            used.add(i)
-            if len(group) > 0:
-                groups.append(group)
-        return groups
-
-class VideoFaceGroupWorker(QObject):
-    finished = pyqtSignal(list)
-    progress = pyqtSignal(int, int)
-    error = pyqtSignal(str)
-
-    def __init__(self, video_files):
-        super().__init__()
-        self.video_files = video_files
-
-    def run(self):
-        try:
-            groups = self._group_videos_by_face(self.video_files)
-            self.finished.emit(groups)
-        except Exception as e:
-            import traceback
-            self.error.emit(f"{e}\n{traceback.format_exc()}")
-
-    def _extract_video_face_encoding(self, filepath, sample_frames=10):
-        """
-        動画からsample_frames個のフレームを等間隔でサンプリングし、
-        最初に見つかった顔特徴量を返す（なければNone）。
-        """
-        import numpy as np
-        try:
-            cap = cv2.VideoCapture(filepath)
-            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            if frame_count == 0:
-                cap.release()
-                return None
-            indices = np.linspace(0, frame_count - 1, sample_frames, dtype=int)
-            encodings = []
-            for idx in indices:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-                ret, frame = cap.read()
-                if not ret:
-                    continue
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                try:
-                    faces = face_recognition.face_encodings(rgb)
-                except Exception:
-                    faces = []
-                if faces:
-                    encodings.append(faces[0])
-            cap.release()
-            if encodings:
-                # 複数フレームの顔特徴量の平均を代表値とする
-                return (filepath, np.mean(encodings, axis=0))
-            else:
-                return None
-        except Exception:
-            return None
-
-    def _group_videos_by_face(self, video_files):
-        """
-        動画ファイルリストを顔特徴量でグループ化する。
-        """
-        import numpy as np
-        from sklearn.cluster import DBSCAN
-
-        if face_recognition is None:
-            raise RuntimeError("face_recognitionライブラリが必要です。")
-
-        encodings = []
-        paths = []
-        total = len(video_files)
-        # 並列で顔特徴量抽出
-        with concurrent.futures.ThreadPoolExecutor(max_workers=get_num_workers(4)) as executor:
-            futures = [executor.submit(self._extract_video_face_encoding, f) for f in video_files]
-            for idx, future in enumerate(concurrent.futures.as_completed(futures)):
-                res = future.result()
-                if res:
-                    f, encoding = res
-                    paths.append(f)
-                    encodings.append(encoding)
-                self.progress.emit(idx + 1, total)
-
-        if not encodings:
-            return []
-
-        # DBSCANクラスタリング
-        X = np.stack(encodings)
-        clustering = DBSCAN(eps=0.6, min_samples=1, metric='euclidean').fit(X)
-        labels = clustering.labels_
-
-        groups = []
-        for label in set(labels):
-            group = [paths[i] for i, l in enumerate(labels) if l == label]
-            if group:
-                groups.append(group)
-        return groups
-
-class VideoDuplicateFinder(QWidget):
+# --- GUI ---
+class DuplicateFinderGUI(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("動画・画像重複検出ツール")
-        self.layout = QVBoxLayout()
-        self.progress_label = QLabel("進捗: 0%")
-        self.layout.addWidget(self.progress_label)
-        self.progress_bar = QProgressBar()
-        self.layout.addWidget(self.progress_bar)
-        self.folder_btn = QPushButton("フォルダ選択（動画）")
-        self.folder_btn.clicked.connect(self.select_folder)
-        self.layout.addWidget(self.folder_btn)
-        self.img_btn = QPushButton("フォルダ選択（画像）")
-        self.img_btn.clicked.connect(self.select_image_folder)
-        self.layout.addWidget(self.img_btn)
-        # self.face_btn = QPushButton("画像整理（顔でグループ化）")
-        # self.face_btn.clicked.connect(self.group_faces)
-        # self.layout.addWidget(self.face_btn)
-        # self.video_face_btn = QPushButton("動画整理（顔でグループ化）")
-        # self.video_face_btn.clicked.connect(self.group_video_faces)
-        # self.layout.addWidget(self.video_face_btn)
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll_content = QWidget()
-        self.scroll_layout = QVBoxLayout()
-        self.scroll_content.setLayout(self.scroll_layout)
-        self.scroll.setWidget(self.scroll_content)
-        self.layout.addWidget(self.scroll)
-        self.setLayout(self.layout)
-        self.duplicates = []
-        self.image_files = []
-        self.video_files = []
+        self.resize(900, 600)
+        self.folder = None
+        self.groups = []
+        self.init_ui()
 
-        # send2trashが使えない場合は警告
-        if not SEND2TRASH_AVAILABLE:
-            QMessageBox.warning(self, "警告", "send2trashライブラリが見つかりません。削除機能は無効化されます。")
+    def init_ui(self):
+        self.setStyleSheet('''
+            QWidget {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0f2027, stop:0.5 #2c5364, stop:1 #232526);
+                color: #00ffe7;
+                font-family: "Consolas", "Fira Mono", "Meiryo UI", monospace;
+                font-size: 14px;
+                letter-spacing: 1px;
+            }
+            QLabel {
+                color: #00ffe7;
+                text-shadow: 0 0 6px #00ffe7, 0 0 2px #00ffe7;
+            }
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #232526, stop:1 #0f2027);
+                color: #00ffe7;
+                border: 2px solid #00ffe7;
+                border-radius: 10px;
+                padding: 8px 16px;
+                font-size: 15px;
+                font-family: "Consolas", monospace;
+                font-weight: bold;
+                text-shadow: 0 0 6px #00ffe7;
+                box-shadow: 0 0 12px #00ffe733;
+                transition: all 0.2s;
+            }
+            QPushButton:hover {
+                background: #00ffe7;
+                color: #232526;
+                border: 2px solid #00ffe7;
+                box-shadow: 0 0 24px #00ffe7;
+            }
+            QPushButton:pressed {
+                background: #232526;
+                color: #00ffe7;
+                border: 2px solid #00ffe7;
+            }
+            QProgressBar {
+                background: #232526;
+                border: 2px solid #00ffe7;
+                border-radius: 8px;
+                text-align: center;
+                color: #00ffe7;
+                font-size: 14px;
+                font-family: "Consolas", monospace;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00ffe7, stop:1 #00ff99);
+                border-radius: 8px;
+                box-shadow: 0 0 16px #00ffe7;
+            }
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+        ''')
+        layout = QVBoxLayout()
+        self.folder_label = QLabel("フォルダ未選択")
+        self.folder_label.setStyleSheet("font-size:20px;font-weight:bold;padding:8px 0 8px 0;color:#00ffe7;text-shadow:0 0 8px #00ffe7;")
+        self.select_btn = QPushButton("[ フォルダ選択 ]")
+        self.select_btn.setStyleSheet("font-size:17px;font-weight:bold;background:transparent;color:#00ffe7;border:2px solid #00ffe7;")
+        self.select_btn.clicked.connect(self.select_folder)
+        self.progress = QProgressBar()
+        self.progress.setValue(0)
+        self.progress_time_label = QLabel("")
+        self.progress_time_label.setStyleSheet("font-size:13px;color:#00ff99;padding:2px 0 8px 0;text-shadow:0 0 8px #00ff99;")
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.content_widget = QWidget()
+        self.content_layout = QVBoxLayout()
+        self.content_widget.setLayout(self.content_layout)
+        self.scroll_area.setWidget(self.content_widget)
+        self.delete_btn = QPushButton("[ 選択ファイルをゴミ箱/移動 ]")
+        self.delete_btn.setStyleSheet("font-size:17px;font-weight:bold;background:transparent;color:#ff00c8;border:2px solid #ff00c8;")
+        self.delete_btn.clicked.connect(self.delete_selected)
+        self.delete_btn.setEnabled(False)
+        layout.addWidget(self.folder_label)
+        layout.addWidget(self.select_btn)
+        layout.addWidget(self.progress)
+        layout.addWidget(self.progress_time_label)
+        layout.addWidget(self.scroll_area)
+        layout.addWidget(self.delete_btn)
+        self.setLayout(layout)
+        self.selected_paths = set()
 
-    def clear_scroll(self):
-        while self.scroll_layout.count():
-            child = self.scroll_layout.takeAt(0)
-            widget = child.widget()
-            if widget:
-                widget.deleteLater()
+    def on_thumbnail_clicked(self):
+        btn = self.sender()
+        path = btn.property("filepath")
+        if path in self.selected_paths:
+            self.selected_paths.remove(path)
+            btn.setStyleSheet("")
+        else:
+            self.selected_paths.add(path)
+            btn.setStyleSheet("border: 3px solid red;")
+        # 選択が1つ以上なら削除ボタン有効
+        self.delete_btn.setEnabled(bool(self.selected_paths))
 
-    def update_progress(self, current, total):
+    def find_duplicates(self):
         import time
-        percent = int(current / total * 100)
-        self.progress_label.setText(f"進捗: {percent}%")
-        self.progress_bar.setValue(percent)
-        # --- 残り時間の推定表示 ---
-        if not hasattr(self, "_progress_times"):
-            self._progress_times = []
-        now = time.time()
-        self._progress_times.append((current, now))
-        # 進捗が2以上進んだら計算
-        if current > 1 and len(self._progress_times) > 1:
-            prev_count, prev_time = self._progress_times[-2]
-            dt = now - prev_time
-            dcount = current - prev_count
-            if dcount > 0 and dt > 0:
-                speed = dcount / dt  # 件数/秒
-                remain = total - current
-                if speed > 0:
-                    remain_sec = remain / speed
-                    if remain_sec > 1:
-                        mins = int(remain_sec // 60)
-                        secs = int(remain_sec % 60)
-                        remain_str = f"推定残り時間: {mins}分{secs}秒"
+        self.thumb_buttons = []
+        video_exts = ('.mp4', '.avi', '.mov', '.mkv', '.wmv')
+        image_exts = ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff')
+        video_files = collect_files(self.folder, video_exts)
+        image_files = collect_files(self.folder, image_exts)
+        file_hashes = []
+        total = len(video_files) + len(image_files)
+        self.progress.setMaximum(total)
+        self.progress_time_label.setText("")
+        start_time = time.time()
+        # 画像
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            for idx, (f, h) in enumerate(zip(image_files, executor.map(lambda x: get_image_phash(x, self.folder), image_files))):
+                file_hashes.append((f, h))
+                self.progress.setValue(idx+1)
+                elapsed = time.time() - start_time
+                done = idx+1
+                if done > 0:
+                    remain = total - done
+                    speed = elapsed / done
+                    eta = int(remain * speed)
+                    if eta > 0:
+                        m, s = divmod(eta, 60)
+                        self.progress_time_label.setText(f"残り目安: {m}分{s}秒")
                     else:
-                        remain_str = "推定残り時間: 1秒未満"
-                    self.progress_label.setText(f"進捗: {percent}%　{remain_str}")
-        QApplication.processEvents()
+                        self.progress_time_label.setText("")
+        # 動画
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            for idx, (f, h) in enumerate(zip(video_files, executor.map(lambda x: get_video_phash(x, 7, self.folder), video_files))):
+                file_hashes.append((f, h))
+                self.progress.setValue(len(image_files)+idx+1)
+                elapsed = time.time() - start_time
+                done = len(image_files)+idx+1
+                if done > 0:
+                    remain = total - done
+                    speed = elapsed / done
+                    eta = int(remain * speed)
+                    if eta > 0:
+                        m, s = divmod(eta, 60)
+                        self.progress_time_label.setText(f"残り目安: {m}分{s}秒")
+                    else:
+                        self.progress_time_label.setText("")
+        file_hashes = [(f, h) for f, h in file_hashes if h is not None]
+        self.groups = group_by_phash(file_hashes)
+        # 既存の内容をクリア
+        while self.content_layout.count():
+            item = self.content_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self.thumb_buttons = []
+        self.selected_paths = set()
+        if not self.groups:
+            label = QLabel("重複動画・画像は見つかりませんでした")
+            label.setStyleSheet("font-size:20px;color:#00ff99;font-weight:bold;padding:20px;text-shadow:0 0 12px #00ff99;")
+            self.content_layout.addWidget(label)
+        else:
+            for group in self.groups:
+                if len(group) < 2:
+                    continue
+                group_label = QLabel("--- 重複グループ ---")
+                group_label.setStyleSheet("font-size:16px;color:#ff00c8;font-weight:bold;padding:8px 0 8px 0;text-shadow:0 0 8px #ff00c8;")
+                self.content_layout.addWidget(group_label)
+                hbox = QHBoxLayout()
+                btns = []
+                for f in group:
+                    vbox = QVBoxLayout()
+                    # サムネイル
+                    if f.lower().endswith(video_exts):
+                        thumb_img = get_video_thumbnail(f, size=(240,240))
+                    else:
+                        thumb_img = get_image_thumbnail(f, size=(240,240))
+                    if thumb_img is not None:
+                        rgb_img = thumb_img.convert("RGB")
+                        w, h = rgb_img.size
+                        data = rgb_img.tobytes()
+                        qimg = QImage(data, w, h, w*3, QImage.Format_RGB888)
+                        pixmap = QPixmap.fromImage(qimg)
+                        icon = QIcon(pixmap.scaled(240, 240, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                        btn = QPushButton()
+                        btn.setIcon(icon)
+                        btn.setIconSize(QSize(240,240))
+                        btn.setProperty("filepath", f)
+                        btn.clicked.connect(self.on_thumbnail_clicked)
+                        btn.setStyleSheet("background:transparent;border:2px solid #00ffe7;border-radius:14px;box-shadow:0 0 16px #00ffe7;")
+                        vbox.addWidget(btn)
+                        btns.append(btn)
+                    else:
+                        btn = QPushButton(f)
+                        btn.setProperty("filepath", f)
+                        btn.clicked.connect(self.on_thumbnail_clicked)
+                        btn.setStyleSheet("background:transparent;border:2px solid #00ffe7;border-radius:14px;box-shadow:0 0 16px #00ffe7;")
+                        vbox.addWidget(btn)
+                        btns.append(btn)
+                    # ファイル名
+                    fname = os.path.basename(f)
+                    label_name = QLabel(fname)
+                    label_name.setAlignment(Qt.AlignCenter)
+                    label_name.setStyleSheet("font-size:14px;color:#00ffe7;font-weight:bold;text-shadow:0 0 8px #00ffe7;")
+                    vbox.addWidget(label_name)
+                    # ファイルパス
+                    label_path = QLabel(f)
+                    label_path.setAlignment(Qt.AlignCenter)
+                    label_path.setStyleSheet("font-size:11px;color:#00ff99;text-shadow:0 0 8px #00ff99;")
+                    vbox.addWidget(label_path)
+                    vbox.addStretch()
+                    wgt = QWidget()
+                    wgt.setLayout(vbox)
+                    hbox.addWidget(wgt)
+                self.thumb_buttons.append(btns)
+                hbox.addStretch()
+                group_widget = QWidget()
+                group_widget.setLayout(hbox)
+                self.content_layout.addWidget(group_widget)
+        self.content_layout.addStretch()
+        self.delete_btn.setEnabled(False)
+        self.progress_time_label.setText("")
+
+    def delete_selected(self):
+        if not self.selected_paths:
+            QMessageBox.information(self, "削除", "ファイルを選択してください")
+            return
+        # 削除方法選択ダイアログ
+        msg = QMessageBox(self)
+        msg.setWindowTitle("ファイル移動/削除方法選択")
+        msg.setText("選択ファイルをどうしますか？")
+        trash_btn = msg.addButton("ゴミ箱に移動", QMessageBox.AcceptRole)
+        move_btn = msg.addButton("別フォルダに移動", QMessageBox.ActionRole)
+        cancel_btn = msg.addButton("キャンセル", QMessageBox.RejectRole)
+        msg.setDefaultButton(trash_btn)
+        msg.exec_()
+        if msg.clickedButton() == cancel_btn:
+            return
+        failed = []
+        if msg.clickedButton() == trash_btn:
+            # ゴミ箱に移動
+            for path in list(self.selected_paths):
+                if not path or not os.path.isfile(path):
+                    failed.append(path)
+                    continue
+                try:
+                    move_to_trash(path)
+                    self.selected_paths.remove(path)
+                except Exception as e:
+                    failed.append(f"{path} : {e}")
+            if failed:
+                QMessageBox.warning(self, "削除エラー", "\n".join(map(str, failed)))
+            else:
+                QMessageBox.information(self, "削除", "選択ファイルをゴミ箱に移動しました")
+        elif msg.clickedButton() == move_btn:
+            # 別フォルダに移動
+            target_dir = QFileDialog.getExistingDirectory(self, "移動先フォルダを選択")
+            if not target_dir:
+                return
+            for path in list(self.selected_paths):
+                if not path or not os.path.isfile(path):
+                    failed.append(path)
+                    continue
+                try:
+                    fname = os.path.basename(path)
+                    dest = os.path.join(target_dir, fname)
+                    # 既存ならリネーム
+                    base, ext = os.path.splitext(fname)
+                    count = 1
+                    while os.path.exists(dest):
+                        dest = os.path.join(target_dir, f"{base}_copy{count}{ext}")
+                        count += 1
+                    shutil_move(path, dest)
+                    self.selected_paths.remove(path)
+                except Exception as e:
+                    failed.append(f"{path} : {e}")
+            if failed:
+                QMessageBox.warning(self, "移動エラー", "\n".join(map(str, failed)))
+            else:
+                QMessageBox.information(self, "移動", "選択ファイルを指定フォルダへ移動しました")
+        self.find_duplicates()
 
     def select_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "動画フォルダ選択")
-        if not folder:
-            return
-        # --- ここで処理方法を選択 ---
-        method, ok = QInputDialog.getItem(
-            self,
-            "処理方法選択",
-            "このフォルダで実行する処理を選んでください：",
-            ["重複チェック", "顔でグループ化"],
-            0,
-            False
-        )
-        if not ok:
-            return
-        self.clear_scroll()
-        self.progress_label.setText("進捗: 0%")
-        self.progress_bar.setValue(0)
-        video_files = get_video_files(folder)
-        self.video_files = video_files
-        self.image_files = []  # 画像リストをクリア
-        self.progress_bar.setMaximum(100)
-        self.progress_bar.setValue(0)
-        if method == "重複チェック":
-            self.duplicates = group_similar_videos(video_files, progress_callback=self.update_progress)
-            self.progress_label.setText("進捗: 100%")
-            self.progress_bar.setValue(100)
-            if not self.duplicates:
-                QMessageBox.information(self, "結果", "重複動画は見つかりませんでした。")
-                return
-            self.show_video_duplicates(self.duplicates)
-        elif method == "顔でグループ化":
-            if not video_files:
-                QMessageBox.warning(self, "エラー", "動画ファイルが見つかりません。")
-                return
-            self.run_video_face_group_worker(video_files)
-
-    def select_image_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "画像フォルダ選択")
-        if not folder:
-            return
-        self.clear_scroll()
-        self.progress_label.setText("進捗: 0%")
-        self.progress_bar.setValue(0)
-        image_files = get_image_files(folder)
-        self.image_files = image_files
-        self.video_files = []  # 動画リストをクリア（動画は無視）
-        self.progress_bar.setMaximum(100)
-        self.progress_bar.setValue(0)
-        self.run_face_group_worker(image_files)
-
-    def run_face_group_worker(self, image_files):
-        self.progress_bar.setMaximum(100)
-        self.progress_bar.setValue(0)
-        self.progress_label.setText("顔グループ化中...")
-        self.face_thread = QThread()
-        self.face_worker = FaceGroupWorker(image_files)
-        self.face_worker.moveToThread(self.face_thread)
-        self.face_thread.started.connect(self.face_worker.run)
-        self.face_worker.finished.connect(self.on_face_group_finished)
-        self.face_worker.progress.connect(self.update_progress)
-        self.face_worker.error.connect(self.on_face_group_error)
-        self.face_worker.finished.connect(self.face_thread.quit)
-        self.face_worker.finished.connect(self.face_worker.deleteLater)
-        self.face_thread.finished.connect(self.face_thread.deleteLater)
-        self.face_thread.start()
-
-    def on_face_group_finished(self, groups):
-        self.progress_label.setText("進捗: 100%")
-        self.progress_bar.setValue(100)
-        if not groups:
-            QMessageBox.information(self, "結果", "顔グループは見つかりませんでした。")
-            return
-        # グループごとに移動UI
-        for idx, group in enumerate(groups):
-            folder_name, ok = QInputDialog.getText(self, "フォルダ名入力", f"グループ{idx+1}のフォルダ名を入力してください:")
-            if not ok or not folder_name:
-                folder_name = f"group_{idx+1}"
-            base_dir = os.path.dirname(group[0])
-            dest_dir = os.path.join(base_dir, folder_name)
-            os.makedirs(dest_dir, exist_ok=True)
-            for f in group:
-                try:
-                    basename = os.path.basename(f)
-                    new_path = os.path.join(dest_dir, basename)
-                    if os.path.abspath(f) != os.path.abspath(new_path):
-                        os.rename(f, new_path)
-                except Exception:
-                    continue
-        QMessageBox.information(self, "完了", "顔ごとに画像をフォルダ分けしました。")
-
-    def on_face_group_error(self, msg):
-        # --- ここから修正: エラー内容とコマンド例を表示 ---
-        msg_detail = (
-            f"{msg}\n\n"
-            "【対策例】\n"
-            "コマンドプロンプトで下記を実行してください:\n"
-            "  python -m pip install git+https://github.com/ageitgey/face_recognition_models\n"
-            "または\n"
-            "  pip install git+https://github.com/ageitgey/face_recognition_models\n"
-            "（実行中のPython環境でインストールしてください）"
-        )
-        QMessageBox.warning(self, "エラー", msg_detail)
-
-    def run_video_face_group_worker(self, video_files):
-        self.progress_bar.setMaximum(100)
-        self.progress_bar.setValue(0)
-        self.progress_label.setText("動画顔グループ化中...")
-        self.video_face_thread = QThread()
-        self.video_face_worker = VideoFaceGroupWorker(video_files)
-        self.video_face_worker.moveToThread(self.video_face_thread)
-        self.video_face_thread.started.connect(self.video_face_worker.run)
-        self.video_face_worker.finished.connect(self.on_video_face_group_finished)
-        self.video_face_worker.progress.connect(self.update_progress)
-        self.video_face_worker.error.connect(self.on_face_group_error)
-        self.video_face_worker.finished.connect(self.video_face_thread.quit)
-        self.video_face_worker.finished.connect(self.video_face_worker.deleteLater)
-        self.video_face_thread.finished.connect(self.video_face_thread.deleteLater)
-        self.video_face_thread.start()
-
-    def on_video_face_group_finished(self, groups):
-        self.progress_label.setText("進捗: 100%")
-        self.progress_bar.setValue(100)
-        if not groups:
-            QMessageBox.information(self, "結果", "顔グループは見つかりませんでした。")
-            return
-        # グループごとに確認UI
-        for idx, group in enumerate(groups):
-            dlg = QDialog(self)
-            dlg.setWindowTitle(f"動画グループ{idx+1}の確認")
-            vbox = QVBoxLayout()
-            label = QLabel("このグループの動画は同じ人物ですか？")
-            vbox.addWidget(label)
-            thumbs_layout = QHBoxLayout()
-            for f in group:
-                thumb = get_video_thumbnail(f)
-                thumb_label = QLabel()
-                if thumb:
-                    thumb_label.setPixmap(thumb)
-                thumb_label.setToolTip(os.path.basename(f))
-                thumbs_layout.addWidget(thumb_label)
-            vbox.addLayout(thumbs_layout)
-            btn_ok = QPushButton("このグループでOK")
-            btn_skip = QPushButton("やり直し（このグループは移動しない）")
-            btns = QHBoxLayout()
-            btns.addWidget(btn_ok)
-            btns.addWidget(btn_skip)
-            vbox.addLayout(btns)
-            dlg.setLayout(vbox)
-            result = []
-            def accept():
-                result.append(True)
-                dlg.accept()
-            def reject():
-                result.append(False)
-                dlg.reject()
-            btn_ok.clicked.connect(accept)
-            btn_skip.clicked.connect(reject)
-            dlg.exec_()
-            if not result or not result[0]:
-                continue
-            folder_name, ok = QInputDialog.getText(self, "フォルダ名入力", f"動画グループ{idx+1}のフォルダ名を入力してください:")
-            if not ok or not folder_name:
-                folder_name = f"video_group_{idx+1}"
-            base_dir = os.path.dirname(group[0])
-            dest_dir = os.path.join(base_dir, folder_name)
-            os.makedirs(dest_dir, exist_ok=True)
-            for f in group:
-                try:
-                    basename = os.path.basename(f)
-                    new_path = os.path.join(dest_dir, basename)
-                    if os.path.abspath(f) != os.path.abspath(new_path):
-                        os.rename(f, new_path)
-                except Exception:
-                    continue
-        QMessageBox.information(self, "完了", "顔ごとに動画をフォルダ分けしました。")
-
-    def break_long_path(self, path, maxlen=40):
-        # パスをmaxlenごとに<br>で改行
-        import re
-        if len(path) <= maxlen:
-            return path
-        # ディレクトリ区切りで分割しつつ、maxlen超えたら<br>を挿入
-        parts = re.split(r'([\\/])', path)
-        lines = []
-        line = ""
-        for part in parts:
-            if len(line) + len(part) > maxlen and line:
-                lines.append(line)
-                line = part
-            else:
-                line += part
-        if line:
-            lines.append(line)
-        return "<br>".join(lines)
-
-    def show_video_duplicates(self, groups):
-        # グループごとにグリッドレイアウトで表示
-        for idx, group in enumerate(groups):
-            group_widget = QWidget()
-            grid_layout = QGridLayout()
-            # グリッドの隙間を1pxに設定（float不可のため）
-            grid_layout.setHorizontalSpacing(1)
-            grid_layout.setVerticalSpacing(1)
-            group_widget.setLayout(grid_layout)
-            thumb_widgets = []
-            for i, f in enumerate(group):
-                if not os.path.exists(f):
-                    continue  # 削除済みファイルはスキップ
-                v_layout = QVBoxLayout()
-                thumb = get_video_thumbnail(f)
-                thumb_label = QLabel()
-                if thumb:
-                    thumb_label.setPixmap(thumb)
-                # サムネイルの余白を減らす
-                thumb_label.setContentsMargins(2, 2, 2, 2)
-                v_layout.addWidget(thumb_label)
-                title_label = QLabel(f"<b>{os.path.basename(f)}</b>")
-                title_label.setMaximumWidth(240)
-                v_layout.addWidget(title_label)
-                folder_path = os.path.dirname(f)
-                # フォルダパスの最大幅を広げて全体表示しやすくする
-                folder_html = self.break_long_path(folder_path, maxlen=80)
-                folder_label = QLabel(f'<a href="{folder_path}">{folder_html}</a>')
-                folder_label.setTextFormat(Qt.RichText)
-                folder_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
-                folder_label.setOpenExternalLinks(False)
-                folder_label.linkActivated.connect(self.open_folder)
-                folder_label.setWordWrap(True)
-                folder_label.setMaximumWidth(240)
-                v_layout.addWidget(folder_label)
-                try:
-                    size_mb = os.path.getsize(f) / (1024 * 1024)
-                    size_label = QLabel(f"サイズ: {size_mb:.2f} MB")
-                except Exception:
-                    size_label = QLabel("サイズ: 不明")
-                size_label.setMaximumWidth(240)
-                v_layout.addWidget(size_label)
-                cell_widget = QWidget()
-                cell_widget.setLayout(v_layout)
-                del_btn = QPushButton("削除")
-                del_btn.setEnabled(SEND2TRASH_AVAILABLE)
-                del_btn.setFixedWidth(80)
-                def make_delete_func(path, cell_widget, group, group_widget, grid_layout):
-                    return lambda: self.delete_video_and_widget(path, cell_widget, group, group_widget, grid_layout)
-                del_btn.clicked.connect(make_delete_func(f, cell_widget, group, group_widget, grid_layout))
-                v_layout.addWidget(del_btn)
-                # セルの最小幅を設定
-                cell_widget.setMinimumWidth(250)
-                row = i // 4
-                col = i % 4
-                grid_layout.addWidget(cell_widget, row, col)
-            self.scroll_layout.addWidget(group_widget)
-            separator = QLabel("<hr>")
-            separator.setTextFormat(Qt.RichText)
-            self.scroll_layout.addWidget(separator)
-
-    def delete_video_and_widget(self, path, cell_widget, group, group_widget, grid_layout):
-        if not SEND2TRASH_AVAILABLE:
-            QMessageBox.warning(self, "エラー", "send2trashライブラリが見つかりません。削除できません。")
-            return
-        reply = QMessageBox.question(self, "確認", f"{os.path.basename(path)} を削除しますか？", QMessageBox.Yes | QMessageBox.No)
-        if reply == QMessageBox.Yes:
-            try:
-                norm_path = os.path.normpath(path)
-                if norm_path.startswith(r"\\?\\"):
-                    norm_path = norm_path[4:]
-                send2trash(norm_path)
-                QMessageBox.information(self, "削除", f"{os.path.basename(path)} をゴミ箱に移動しました。")
-                # cell_widgetをグリッドから削除し破棄
-                cell_widget.setParent(None)
-                # groupからも削除
-                if path in group:
-                    group.remove(path)
-                # グループが空 or 全て削除済みなら全体を消す
-                if not [f for f in group if os.path.exists(f)]:
-                    group_widget.setParent(None)
-            except Exception as e:
-                QMessageBox.warning(self, "エラー", f"削除できませんでした: {e}")
-
-    def show_image_duplicates(self, groups):
-        for group in groups:
-            group_widget = QWidget()
-            grid_layout = QGridLayout()
-            grid_layout.setHorizontalSpacing(1)
-            grid_layout.setVerticalSpacing(1)
-            group_widget.setLayout(grid_layout)
-            for i, f in enumerate(group):
-                # --- ここを追加: ファイルが存在しない場合はスキップ ---
-                if not os.path.exists(f):
-                    continue
-                v_layout = QVBoxLayout()
-                thumb = get_image_thumbnail(f)
-                thumb_label = QLabel()
-                if thumb:
-                    thumb_label.setPixmap(thumb)
-                thumb_label.setContentsMargins(2, 2, 2, 2)
-                v_layout.addWidget(thumb_label)
-                title_label = QLabel(f"<b>{os.path.basename(f)}</b>")
-                title_label.setMaximumWidth(240)
-                v_layout.addWidget(title_label)
-                folder_path = os.path.dirname(f)
-                # フォルダパスの最大幅を広げて全体表示しやすくする
-                folder_html = self.break_long_path(folder_path, maxlen=80)
-                folder_label = QLabel(f'<a href="{folder_path}">{folder_html}</a>')
-                folder_label.setTextFormat(Qt.RichText)
-                folder_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
-                folder_label.setOpenExternalLinks(False)
-                folder_label.linkActivated.connect(self.open_folder)
-                folder_label.setWordWrap(True)
-                folder_label.setMaximumWidth(240)
-                v_layout.addWidget(folder_label)
-                try:
-                    size_mb = os.path.getsize(f) / (1024 * 1024)
-                    size_label = QLabel(f"サイズ: {size_mb:.2f} MB")
-                except Exception:
-                    size_label = QLabel("サイズ: 不明")
-                size_label.setMaximumWidth(240)
-                v_layout.addWidget(size_label)
-                del_btn = QPushButton("削除")
-                del_btn.setEnabled(SEND2TRASH_AVAILABLE)
-                del_btn.setFixedWidth(80)
-                cell_widget = QWidget()
-                cell_widget.setLayout(v_layout)
-                def make_delete_func(path, cell_widget, group, group_widget, grid_layout):
-                    return lambda: self.delete_image_and_widget(path, cell_widget, group, group_widget, grid_layout)
-                del_btn.clicked.connect(make_delete_func(f, cell_widget, group, group_widget, grid_layout))
-                v_layout.addWidget(del_btn)
-                cell_widget.setMinimumWidth(250)
-                row = i // 4
-                col = i % 4
-                grid_layout.addWidget(cell_widget, row, col)
-            self.scroll_layout.addWidget(group_widget)
-            separator = QLabel("<hr>")
-            separator.setTextFormat(Qt.RichText)
-            self.scroll_layout.addWidget(separator)
-
-    def delete_image_and_widget(self, path, cell_widget, group, group_widget, grid_layout):
-        if not SEND2TRASH_AVAILABLE:
-            QMessageBox.warning(self, "エラー", "send2trashライブラリが見つかりません。削除できません。")
-            return
-        reply = QMessageBox.question(self, "確認", f"{os.path.basename(path)} を削除しますか？", QMessageBox.Yes | QMessageBox.No)
-        if reply == QMessageBox.Yes:
-            try:
-                norm_path = os.path.normpath(path)
-                if norm_path.startswith(r"\\?\\"):
-                    norm_path = norm_path[4:]
-                send2trash(norm_path)
-                QMessageBox.information(self, "削除", f"{os.path.basename(path)} をゴミ箱に移動しました。")
-                # cell_widgetをグリッドから削除し破棄
-                cell_widget.setParent(None)
-                if path in group:
-                    group.remove(path)
-                if not [f for f in group if os.path.exists(f)]:
-                    group_widget.setParent(None)
-            except Exception as e:
-                QMessageBox.warning(self, "エラー", f"削除できませんでした: {e}")
-
-    def group_faces(self):
-        if not self.image_files:
-            QMessageBox.warning(self, "エラー", "先に画像フォルダを選択してください。")
-            return
-        # analyze_and_group_faces(self.image_files, self)
-        self.run_face_group_worker(self.image_files)
-
-    def group_video_faces(self):
-        if not self.video_files:
-            QMessageBox.warning(self, "エラー", "先に動画フォルダを選択してください。")
-            return
-        # analyze_and_group_video_faces(self.video_files, self)
-        self.run_video_face_group_worker(self.video_files)
-
-    def open_folder(self, folder_path):
-        QDesktopServices.openUrl(QUrl.fromLocalFile(folder_path))
-
-# このメッセージの意味：
-# face_recognitionライブラリを使うには、顔認識用の学習済みモデル（face_recognition_models）が必要です。
-# それがインストールされていないため、エラーが出ています。
-#
-# 解決方法：
-# コマンドプロンプトで下記のコマンドを実行してください。
-#   pip install git+https://github.com/ageitgey/face_recognition_models
-# これで必要なモデルデータがインストールされ、face_recognitionが使えるようになります。
-
-# face_recognition_modelsをインストールしても
-# 「Please install `face_recognition_models` ...」と出る場合の主な原因：
-
-# 1. Pythonのバージョンや仮想環境が複数あり、face_recognitionとface_recognition_modelsが別の環境にインストールされている
-# 2. pipでインストールした場所と、実行しているpython.exeの場所が違う
-# 3. face_recognition_modelsのインストールが失敗している
-# 4. 権限不足やパスの問題でPythonがmodelsを見つけられない
-
-# 対策例：
-# ・「python -m pip install ...」で、実行しているPython環境にインストールする
-# ・「pip show face_recognition_models」「pip show face_recognition」でパスを確認
-# ・「where python」「where pip」で実際に使われているパスを確認
-# ・仮想環境を使っている場合は、必ずその環境をアクティブにしてからpip installする
-# ・インストール後にPythonを再起動する
-
-# 例:
-#   python -m pip install git+https://github.com/ageitgey/face_recognition_models
+        folder = QFileDialog.getExistingDirectory(self, "フォルダ選択")
+        if folder:
+            self.folder = folder
+            self.folder_label.setText(folder)
+            self.find_duplicates()
 
 if __name__ == "__main__":
-    try:
-        # --- 依存ライブラリのチェック ---
-        missing = []
-        try:
-            import PyQt5
-        except ImportError:
-            missing.append("PyQt5")
-        try:
-            import imagehash
-        except ImportError:
-            missing.append("imagehash")
-        try:
-            import cv2
-        except ImportError:
-            missing.append("opencv-python")
-        # send2trash, face_recognitionは既存のtryでOK
-
-        if missing:
-            msg = "必要なライブラリが見つかりません: " + ", ".join(missing) + "\n"
-            msg += "コマンドプロンプトで下記を実行してください:\n"
-            for lib in missing:
-                msg += f"  pip install {lib}\n"
-            print(msg)
-            try:
-                from PyQt5.QtWidgets import QApplication, QMessageBox
-                app = QApplication(sys.argv)
-                QMessageBox.critical(None, "エラー", msg)
-            except Exception:
-                pass
-            sys.exit(1)
-
-        app = QApplication(sys.argv)
-        win = VideoDuplicateFinder()
-        win.show()
-        sys.exit(app.exec_())
-    except Exception as e:
-        import traceback
-        tb = traceback.format_exc()
-        print("エラーが発生しました:", e)
-        print(tb)
-        try:
-            from PyQt5.QtWidgets import QApplication, QMessageBox
-            # QApplicationがまだなければ作る
-            if QApplication.instance() is None:
-                app = QApplication(sys.argv)
-            QMessageBox.critical(None, "致命的エラー", f"{e}\n\n{tb}")
-        except Exception:
-            pass
-        sys.exit(1)
+    app = QApplication(sys.argv)
+    win = DuplicateFinderGUI()
+    win.show()
+    sys.exit(app.exec_())
