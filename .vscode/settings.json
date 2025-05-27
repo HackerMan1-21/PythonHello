@@ -1,4 +1,4 @@
 {
-	"python.venvPath": "D:\\github\\PythonHello\\.venv",
-	"python.defaultInterpreterPath": "D:\\github\\PythonHello\\.venv\\Scripts\\python.exe"
+	"python.venvPath": "D:\\github\\PythonHello\\movieEditor",
+	"python.defaultInterpreterPath": "D:\\github\\PythonHello\\movieEditor\\Scripts\\python.exe"
 }

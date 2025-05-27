@@ -25,15 +25,15 @@ def load_cache(cache_file, key_file) -> bytes:
         os.chmod(cache_file, 0o644)
     except Exception:
         pass  # パーミッション変更に失敗しても無視
+    print(f"[キャッシュ読込] {os.path.abspath(cache_file)}")
     # キャッシュファイルを読み込む
     with open(cache_file, 'rb') as f:
         return f.read()
 
 def save_cache(cache_file, data: bytes, **kwargs) -> None:
-    # キャッシュファイルを別の場所に保存する
-    cache_dir = os.path.join(os.path.dirname(cache_file), 'cache')
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_file = os.path.join(cache_dir, os.path.basename(cache_file))
+    # 指定されたキャッシュファイルパスにそのまま保存する
+    print(f"[キャッシュ保存] {os.path.abspath(cache_file)} ({len(data)} bytes)")
+    os.makedirs(os.path.dirname(cache_file), exist_ok=True)
     with open(cache_file, 'wb') as f:
         f.write(data)
 
