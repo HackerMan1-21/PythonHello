@@ -80,3 +80,38 @@ def move_selected_files_to_folder(checkboxes, parent):
     else:
         QMessageBox.information(parent, "移動完了", "選択したファイルを移動しました")
     parent.accept()
+
+def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_convert, run_mp4_digital_repair):
+    if not broken_groups:
+        from component.ui_util import show_info_dialog
+        show_info_dialog(parent, "壊れ動画検出", "壊れた動画は見つかりませんでした")
+        return
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("壊れ動画グループ")
+    vbox = QVBoxLayout()
+    for group in broken_groups:
+        group_box = QGroupBox("壊れ動画グループ")
+        group_layout = QHBoxLayout()
+        for f in group:
+            name_label = QLabel(os.path.basename(f))
+            repair_btn = QPushButton("修復")
+            repair_btn.clicked.connect(lambda _, path=f: run_mp4_repair(path))
+            convert_btn = QPushButton("変換")
+            convert_btn.clicked.connect(lambda _, path=f: run_mp4_convert(path))
+            digital_btn = QPushButton("デジタル修復")
+            digital_btn.clicked.connect(lambda _, path=f: run_mp4_digital_repair(path))
+            vbox2 = QVBoxLayout()
+            vbox2.addWidget(name_label)
+            vbox2.addWidget(repair_btn)
+            vbox2.addWidget(convert_btn)
+            vbox2.addWidget(digital_btn)
+            file_widget = QWidget()
+            file_widget.setLayout(vbox2)
+            group_layout.addWidget(file_widget)
+        group_box.setLayout(group_layout)
+        vbox.addWidget(group_box)
+    btns = QDialogButtonBox(QDialogButtonBox.Close)
+    btns.rejected.connect(dlg.reject)
+    vbox.addWidget(btns)
+    dlg.setLayout(vbox)
+    dlg.exec_()

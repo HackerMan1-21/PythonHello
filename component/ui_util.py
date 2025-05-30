@@ -1,6 +1,6 @@
 # component/ui_util.py
 # UI部品生成・グループUI構築・比較再生・詳細ダイアログなど
-from PyQt5.QtWidgets import QLabel, QVBoxLayout, QWidget, QDialog, QHBoxLayout, QMessageBox, QFileDialog
+from PyQt5.QtWidgets import QLabel, QVBoxLayout, QWidget, QDialog, QHBoxLayout, QFileDialog, QMessageBox
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import Qt
 import os
@@ -63,6 +63,18 @@ def add_thumbnail_widget(parent, content_layout, file_path, toggle_select, selec
     widget.setStyleSheet("background:rgba(0,0,0,0.3);border-radius:8px;margin:4px 0;padding:4px 8px;")
     widget.mousePressEvent = lambda e, p=file_path: toggle_select(widget, p, selected_paths, delete_btn)
     content_layout.addWidget(widget)
+
+def get_save_file_path(parent, title, default_path, filter_str):
+    return QFileDialog.getSaveFileName(parent, title, default_path, filter_str)
+
+def show_info_dialog(parent, title, message):
+    QMessageBox.information(parent, title, message)
+
+def show_warning_dialog(parent, title, message):
+    QMessageBox.warning(parent, title, message)
+
+def show_question_dialog(parent, title, message):
+    return QMessageBox.question(parent, title, message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
 
 def update_progress(progress_bar, value, progress_time_label=None, eta_label=None, elapsed=None):
     progress_bar.setValue(value)

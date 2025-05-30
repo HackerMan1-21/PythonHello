@@ -31,8 +31,8 @@ from component.face_grouping import group_by_face_and_move, get_face_groups
 from component.broken_checker import check_broken_videos
 from component.ffmpeg_util import show_mp4_tool_dialog, repair_mp4, convert_mp4
 from ai_tools import digital_repair
-from component.ui_util import show_detail_dialog, show_compare_dialog, add_thumbnail_widget, update_progress, drag_enter_event, drop_event, delete_selected_dialog
-from component.group_ui import create_duplicate_group_ui, show_face_grouping_dialog, move_selected_files_to_folder
+from component.ui_util import show_detail_dialog, show_compare_dialog, add_thumbnail_widget, update_progress, drag_enter_event, drop_event, delete_selected_dialog, get_save_file_path, show_info_dialog, show_warning_dialog, show_question_dialog
+from component.group_ui import create_duplicate_group_ui, show_face_grouping_dialog, move_selected_files_to_folder, show_broken_video_dialog
 
 # --- ここにDuplicateFinderGUIクラス本体を移植 ---
 
@@ -243,11 +243,9 @@ class DuplicateFinderGUI(QWidget):
         # 重複チェック処理（グループごとのUI生成をgroup_ui.pyに委譲）
         folder = self.folder_label.text()
         if not folder or folder == "フォルダ未選択":
-            QMessageBox.warning(self, "警告", "先にフォルダを選択してください")
+            show_warning_dialog(self, "警告", "先にフォルダを選択してください")
             return
-        self.progress.setValue(0)
-        self.progress_time_label.setText("")
-        self.eta_label.setText("")
+        update_progress(self.progress, 0, self.progress_time_label, self.eta_label, 0)
         start_time = time.time()
         self.load_thumb_cache(folder)
         duplicates, progress_iter = find_duplicates_in_folder(folder, self.progress)
@@ -268,29 +266,28 @@ class DuplicateFinderGUI(QWidget):
             self.group_widgets.append(group_box)
         self.delete_btn.setEnabled(False)
         elapsed = time.time() - start_time
-        self.eta_label.setText(f"完了: {elapsed:.1f}秒")
+        update_progress(self.progress, 100, self.progress_time_label, self.eta_label, elapsed)
         self.save_thumb_cache(folder)
 
-    def show_detail_dialog(self, file_path):
-        # UIユーティリティに移譲
-        show_detail_dialog(self, file_path)
-
-    def show_compare_dialog(self, file1, file2):
-        # UIユーティリティに移譲
-        from component.thumbnail_util import get_thumbnail_for_file
-        show_compare_dialog(self, file1, file2, get_thumbnail_for_file)
+    def reload_folder(self):
+        # 再読み込み処理
+        folder = self.folder_label.text()
+        if not folder or folder == "フォルダ未選択":
+            show_warning_dialog(self, "警告", "先にフォルダを選択してください")
+            return
+        self.process_folder(folder)
 
     def delete_single_file(self, file_path):
         # 個別削除
         move_to_trash(file_path)
-        QMessageBox.information(self, "削除", f"{os.path.basename(file_path)} をゴミ箱に移動しました")
+        show_info_dialog(self, "削除", f"{os.path.basename(file_path)} をゴミ箱に移動しました")
         self.reload_folder()
 
     def reload_folder(self):
         # 再読み込み処理
         folder = self.folder_label.text()
         if not folder or folder == "フォルダ未選択":
-            QMessageBox.warning(self, "警告", "先にフォルダを選択してください")
+            show_warning_dialog(self, "警告", "先にフォルダを選択してください")
             return
         self.process_folder(folder)
 
@@ -374,74 +371,40 @@ class DuplicateFinderGUI(QWidget):
             return
         video_exts = ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
         broken_groups = check_broken_videos(folder, video_exts)
-        if not broken_groups:
-            QMessageBox.information(self, "壊れ動画検出", "壊れた動画は見つかりませんでした")
-            return
-        dlg = QDialog(self)
-        dlg.setWindowTitle("壊れ動画グループ")
-        vbox = QVBoxLayout()
-        for group in broken_groups:
-            group_box = QGroupBox("壊れ動画グループ")
-            group_layout = QHBoxLayout()
-            for f in group:
-                name_label = QLabel(os.path.basename(f))
-                repair_btn = QPushButton("修復")
-                repair_btn.clicked.connect(lambda _, path=f: self.run_mp4_repair(path))
-                convert_btn = QPushButton("変換")
-                convert_btn.clicked.connect(lambda _, path=f: self.run_mp4_convert(path))
-                digital_btn = QPushButton("デジタル修復")
-                digital_btn.clicked.connect(lambda _, path=f: self.run_mp4_digital_repair(path))
-                vbox2 = QVBoxLayout()
-                vbox2.addWidget(name_label)
-                vbox2.addWidget(repair_btn)
-                vbox2.addWidget(convert_btn)
-                vbox2.addWidget(digital_btn)
-                file_widget = QWidget()
-                file_widget.setLayout(vbox2)
-                group_layout.addWidget(file_widget)
-            group_box.setLayout(group_layout)
-            vbox.addWidget(group_box)
-        btns = QDialogButtonBox(QDialogButtonBox.Close)
-        btns.rejected.connect(dlg.reject)
-        vbox.addWidget(btns)
-        dlg.setLayout(vbox)
-        dlg.exec_()
+        show_broken_video_dialog(self, broken_groups, self.run_mp4_repair, self.run_mp4_convert, self.run_mp4_digital_repair)
 
     def run_mp4_repair(self, file_path=None):
-        # MP4修復処理（簡易）
         if not file_path:
             return
-        save_path, _ = QFileDialog.getSaveFileName(self, "修復後の保存先を指定", os.path.splitext(file_path)[0] + "_repaired" + os.path.splitext(file_path)[1], "動画ファイル (*.*)")
+        save_path, _ = get_save_file_path(self, "修復後の保存先を指定", os.path.splitext(file_path)[0] + "_repaired" + os.path.splitext(file_path)[1], "動画ファイル (*.*)")
         if not save_path:
             return
         try:
             repair_mp4(file_path, save_path)
-            QMessageBox.information(self, "修復完了", f"{os.path.basename(file_path)} の修復が完了しました")
+            show_info_dialog(self, "修復完了", f"{os.path.basename(file_path)} の修復が完了しました")
         except Exception as e:
-            QMessageBox.warning(self, "修復失敗", str(e))
+            show_warning_dialog(self, "修復失敗", str(e))
 
     def run_mp4_convert(self, file_path=None):
-        # MP4変換処理（簡易）
         if not file_path:
             return
-        save_path, _ = QFileDialog.getSaveFileName(self, "変換後の保存先を指定", os.path.splitext(file_path)[0] + "_converted" + os.path.splitext(file_path)[1], "動画ファイル (*.*)")
+        save_path, _ = get_save_file_path(self, "変換後の保存先を指定", os.path.splitext(file_path)[0] + "_converted" + os.path.splitext(file_path)[1], "動画ファイル (*.*)")
         if not save_path:
             return
         try:
             convert_mp4(file_path, save_path)
-            QMessageBox.information(self, "変換完了", f"{os.path.basename(file_path)} の変換が完了しました")
+            show_info_dialog(self, "変換完了", f"{os.path.basename(file_path)} の変換が完了しました")
         except Exception as e:
-            QMessageBox.warning(self, "変換失敗", str(e))
+            show_warning_dialog(self, "変換失敗", str(e))
 
     def run_mp4_digital_repair(self, file_path=None):
-        # デジタル修復・AI超解像
         if not file_path:
             return
-        save_path, _ = QFileDialog.getSaveFileName(self, "高画質化後の保存先を指定", os.path.splitext(file_path)[0] + "_aiup_gfpgan" + os.path.splitext(file_path)[1], "動画ファイル (*.*)")
+        save_path, _ = get_save_file_path(self, "高画質化後の保存先を指定", os.path.splitext(file_path)[0] + "_aiup_gfpgan" + os.path.splitext(file_path)[1], "動画ファイル (*.*)")
         if not save_path:
             return
         try:
             digital_repair(file_path, save_path)
-            QMessageBox.information(self, "AI超解像完了", f"{os.path.basename(file_path)} のAI超解像が完了しました")
+            show_info_dialog(self, "AI超解像完了", f"{os.path.basename(file_path)} のAI超解像が完了しました")
         except Exception as e:
-            QMessageBox.warning(self, "AI超解像失敗", str(e))
+            show_warning_dialog(self, "AI超解像失敗", str(e))
