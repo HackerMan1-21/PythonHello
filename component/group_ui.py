@@ -1,3 +1,16 @@
+"""
+group_ui.py
+重複グループ・顔グループ・壊れ動画グループなどのUI部品生成ユーティリティ。
+
+主な機能:
+- 重複グループUIの生成（サムネイル・詳細・削除・比較ボタン付き）
+- 顔グループダイアログの表示
+- サムネイル取得・型変換・キャッシュ利用の統一
+
+依存:
+- PyQt5, component.thumbnail.thumbnail_util
+"""
+
 # component/group_ui.py
 # グループUI部品生成（重複グループ・顔グループ・壊れ動画グループなど）
 from PyQt5.QtWidgets import QGroupBox, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QWidget, QCheckBox, QDialog, QDialogButtonBox, QMessageBox, QFileDialog

@@ -1,4 +1,20 @@
-# ai_tools.py
+"""
+ai_tools.py
+AI超解像・動画修復・変換などの高レベルAI処理ラッパー。
+
+主な機能:
+- 画像/動画のAI超解像（Real-ESRGAN）
+- 顔復元（GFPGAN）
+- 動画のフレーム分解・再合成
+- サムネイルキャッシュ連携
+
+依存:
+- component.ai.real_esrgan_util
+- component.ai.gfpgan_util
+- component.ai.frame_util
+- component.thumbnail.thumbnail_util
+"""
+
 # 修復: AI超解像・動画修復・変換など
 
 from component.ai.real_esrgan_util import real_esrgan_upscale

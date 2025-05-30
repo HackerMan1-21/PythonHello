@@ -1,3 +1,17 @@
+"""
+digitalize_util.py
+動画のデジタル化・高画質化・AI修復などのユーティリティ関数群。
+
+主な機能:
+- 動画のAI高画質化（Real-ESRGAN）
+- 顔復元（GFPGAN）
+- フレーム分解・再合成
+- 進捗UI・一時ディレクトリ競合回避・クリーンアップ
+
+依存:
+- OpenCV, face_recognition, GFPGAN, ffmpeg, PyQt5
+"""
+
 # digitalize_util.py
 # デジタル化・高画質化・AI修復などの動画処理ユーティリティ
 import os

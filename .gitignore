@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.bak
+*.tmp
+*.log
+*.swp
+*.swo
+*.DS_Store
+.cache/
+.cache
+.cache/*
+.cache_*
+*.pkl
+*.pickle
+*.db
+*.sqlite3
+
+# VSCode
+.vscode/
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# バイナリ・モデル・外部ツール
+*.exe
+*.dll
+*.bin
+*.param
+
+# テスト出力
+htmlcov/
+.coverage
+*.cover
+.cache
+
+# その他
+realesrgan_debug.log
+start_app.bat*
+
+# ビルド/配布物
+build/
+dist/
+*.spec
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.idea/
+
+# プロジェクト固有
+cache/
+
+# テスト
+/tests/__pycache__/
+/component/__pycache__/

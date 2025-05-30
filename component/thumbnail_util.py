@@ -1,3 +1,17 @@
+"""
+thumbnail_util.py
+画像・動画のサムネイル生成・キャッシュ・非同期処理のユーティリティ。
+
+主な機能:
+- 画像/動画のサムネイル生成（PIL, OpenCV）
+- サムネイルキャッシュ管理（メモリ・ファイル）
+- サムネイル取得の型変換統一
+- エラー処理・キャッシュ自動/手動クリーンアップ
+
+依存:
+- Pillow, OpenCV, numpy, pickle, threading
+"""
+
 import os
 import threading
 from PIL import Image
