@@ -1,3 +1,17 @@
+"""
+gui_main.py
+PyQt5ベースの重複動画・画像検出/管理アプリのメインGUIクラス。
+
+主な機能:
+- メインウィンドウ・UI部品の構築
+- サムネイルキャッシュ管理・手動クリア
+- 重複検出・AI修復・壊れ動画チェック等の機能呼び出し
+- 進捗・エラー通知・ユーザー操作全般
+
+依存:
+- PyQt5, Pillow, OpenCV, numpy, imagehash, component配下各種
+"""
+
 # -*- coding: utf-8 -*-
 """
 component/gui_main.py

@@ -1,3 +1,17 @@
+"""
+ui_util.py
+UI部品生成・グループUI構築・比較再生・詳細ダイアログなどのユーティリティ。
+
+主な機能:
+- ファイル詳細・比較ダイアログ表示
+- サムネイル付きUI部品生成
+- 削除/移動ダイアログ・ドラッグ&ドロップ対応
+- 進捗表示・各種メッセージダイアログ
+
+依存:
+- PyQt5, Pillow, component.thumbnail_util, component.file_util
+"""
+
 # component/ui_util.py
 # UI部品生成・グループUI構築・比較再生・詳細ダイアログなど
 from PyQt5.QtWidgets import QLabel, QVBoxLayout, QWidget, QDialog, QHBoxLayout, QFileDialog, QMessageBox
@@ -14,13 +28,14 @@ def show_detail_dialog(parent, file_path):
     try:
         size = os.path.getsize(file_path)
         info += f"サイズ: {size/1024/1024:.2f} MB\n"
-    except Exception:
+    except Exception as e:
+        print(f"[show_detail_dialog] ファイルサイズ取得失敗: {file_path}: {e}")
         info += "サイズ: 不明\n"
     QMessageBox.information(parent, "ファイル詳細", info)
 
 def show_compare_dialog(parent, file1, file2, get_thumbnail_for_file):
     if not file2:
-        QMessageBox.information(parent, "比較再生", "比較対象がありません")
+        show_info_dialog(parent, "比較再生", "比較対象がありません")
         return
     dlg = QDialog(parent)
     dlg.setWindowTitle("比較再生")
@@ -30,8 +45,8 @@ def show_compare_dialog(parent, file1, file2, get_thumbnail_for_file):
         thumb = None
         try:
             thumb = get_thumbnail_for_file(f)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[show_compare_dialog] サムネイル取得失敗: {f}: {e}")
         thumb_label = QLabel()
         if thumb:
             thumb_label.setPixmap(QPixmap.fromImage(thumb).scaled(180, 120))
@@ -47,7 +62,11 @@ def show_compare_dialog(parent, file1, file2, get_thumbnail_for_file):
     dlg.exec_()
 
 def add_thumbnail_widget(parent, content_layout, file_path, toggle_select, selected_paths, delete_btn):
-    thumb = get_thumbnail_for_file(file_path)
+    try:
+        thumb = get_thumbnail_for_file(file_path)
+    except Exception as e:
+        print(f"[add_thumbnail_widget] サムネイル取得失敗: {file_path}: {e}")
+        thumb = None
     thumb_label = QLabel()
     if thumb:
         qimage = ImageQt.ImageQt(thumb)
@@ -67,7 +86,12 @@ def add_thumbnail_widget(parent, content_layout, file_path, toggle_select, selec
     content_layout.addWidget(widget)
 
 def get_save_file_path(parent, title, default_path, filter_str):
-    return QFileDialog.getSaveFileName(parent, title, default_path, filter_str)
+    try:
+        return QFileDialog.getSaveFileName(parent, title, default_path, filter_str)
+    except Exception as e:
+        print(f"[get_save_file_path] ファイル保存ダイアログ失敗: {e}")
+        show_warning_dialog(parent, "保存エラー", f"ファイル保存ダイアログでエラーが発生しました: {e}")
+        return (None, None)
 
 def show_info_dialog(parent, title, message):
     QMessageBox.information(parent, title, message)
@@ -92,14 +116,18 @@ def drag_enter_event(event):
         event.ignore()
 
 def drop_event(event, process_files_func):
-    files = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
-    if not files:
-        return
-    process_files_func(files)
+    try:
+        files = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+        if not files:
+            return
+        process_files_func(files)
+    except Exception as e:
+        print(f"[drop_event] ドロップ処理失敗: {e}")
+        show_warning_dialog(event.widget() if hasattr(event, 'widget') else None, "ドロップエラー", f"ファイルのドロップ処理でエラーが発生しました: {e}")
 
 def delete_selected_dialog(parent, selected_paths, reload_folder_func):
     if not selected_paths:
-        QMessageBox.information(parent, "削除", "削除するファイルを選択してください")
+        show_info_dialog(parent, "削除", "削除するファイルを選択してください")
         return
     msg = QMessageBox(parent)
     msg.setWindowTitle("ファイル移動/削除方法選択")
@@ -116,7 +144,8 @@ def delete_selected_dialog(parent, selected_paths, reload_folder_func):
         for path in list(selected_paths):
             try:
                 move_to_trash(path)
-            except Exception:
+            except Exception as e:
+                print(f"[delete_selected_dialog] ゴミ箱移動失敗: {path}: {e}")
                 failed.append(path)
     elif msg.clickedButton() == move_btn:
         target_dir = QFileDialog.getExistingDirectory(parent, "移動先フォルダを選択（新規作成可）")
@@ -125,11 +154,12 @@ def delete_selected_dialog(parent, selected_paths, reload_folder_func):
         for path in list(selected_paths):
             try:
                 shutil.move(path, target_dir)
-            except Exception:
+            except Exception as e:
+                print(f"[delete_selected_dialog] ファイル移動失敗: {path}: {e}")
                 failed.append(path)
     if failed:
-        QMessageBox.warning(parent, "失敗", f"一部のファイルの移動/削除に失敗しました:\n" + '\n'.join(failed))
+        show_warning_dialog(parent, "失敗", f"一部のファイルの移動/削除に失敗しました:\n" + '\n'.join(failed))
     else:
-        QMessageBox.information(parent, "削除/移動", f"{len(selected_paths)}件のファイルを処理しました")
+        show_info_dialog(parent, "削除/移動", f"{len(selected_paths)}件のファイルを処理しました")
     reload_folder_func()
     selected_paths.clear()

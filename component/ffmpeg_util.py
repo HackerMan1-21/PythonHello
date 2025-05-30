@@ -1,3 +1,16 @@
+"""
+ffmpeg_util.py
+PyQt5ダイアログ連携の動画修復・変換ユーティリティ。
+
+主な機能:
+- MP4修復・変換ダイアログ表示
+- ffmpegによる動画修復・変換処理
+- 進捗UI・エラー通知
+
+依存:
+- PyQt5, ffmpeg, subprocess, os
+"""
+
 import os
 import subprocess
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QProgressDialog

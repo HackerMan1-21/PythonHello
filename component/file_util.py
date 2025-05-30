@@ -1,3 +1,16 @@
+"""
+file_util.py
+ファイル・ディレクトリ操作のユーティリティ。
+
+主な機能:
+- ゴミ箱移動（send2trash対応）・削除
+- パス正規化
+- フォルダ内ファイル状態取得
+
+依存:
+- os, shutil, logging, send2trash（任意）
+"""
+
 import os
 import shutil
 import logging

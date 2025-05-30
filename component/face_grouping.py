@@ -1,3 +1,15 @@
+"""
+face_grouping.py
+顔認識による画像グループ化・グループごとのファイル移動ユーティリティ。
+
+主な機能:
+- 画像リストから顔特徴量でグループ化
+- 類似顔グループごとのディレクトリ移動
+
+依存:
+- face_recognition, os, shutil
+"""
+
 import os
 import shutil
 try:

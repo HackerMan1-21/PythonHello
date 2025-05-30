@@ -65,12 +65,16 @@ def run_mp4_digital_repair(file_path=None, parent=None):
             prog.show()
         # フレームレート取得
         def get_video_framerate(video_path):
-            cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate", "-of", "json", video_path]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            info = json.loads(result.stdout)
-            rate_str = info['streams'][0]['avg_frame_rate']
-            num, den = map(int, rate_str.split('/'))
-            return float(num) / den if den != 0 else 0
+            try:
+                cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate", "-of", "json", video_path]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                info = json.loads(result.stdout)
+                rate_str = info['streams'][0]['avg_frame_rate']
+                num, den = map(int, rate_str.split('/'))
+                return float(num) / den if den != 0 else 0
+            except Exception as e:
+                print(f"[get_video_framerate] 取得失敗: {video_path}: {e}")
+                return 30
         video_framerate = get_video_framerate(file_path)
         # 音声抽出
         subprocess.run(["ffmpeg", "-y", "-i", file_path, "-vn", "-c:a", "copy", audio_only_path], check=True)
@@ -89,6 +93,7 @@ def run_mp4_digital_repair(file_path=None, parent=None):
             img_path = os.path.join(esrgan_out_dir, fname)
             img = cv2.imread(img_path)
             if img is None:
+                print(f"[run_mp4_digital_repair] フレーム画像読込失敗: {img_path}")
                 continue
             rgb_frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             face_locations = face_recognition.face_locations(rgb_frame, model="hog")
@@ -101,9 +106,12 @@ def run_mp4_digital_repair(file_path=None, parent=None):
                     p_left = max(0, left - padding)
                     p_right = min(img.shape[1], right + padding)
                     cropped_face = img[p_top:p_bottom, p_left:p_right]
-                    _, restored_face_image = gfpgan_enhancer.enhance(
-                        cropped_face, has_aligned=False, only_center_face=False, paste_back=True)
-                    final_frame[p_top:p_bottom, p_left:p_right] = restored_face_image
+                    try:
+                        _, restored_face_image = gfpgan_enhancer.enhance(
+                            cropped_face, has_aligned=False, only_center_face=False, paste_back=True)
+                        final_frame[p_top:p_bottom, p_left:p_right] = restored_face_image
+                    except Exception as e:
+                        print(f"[run_mp4_digital_repair] 顔復元失敗: {img_path}: {e}")
             cv2.imwrite(os.path.join(gfpgan_out_dir, fname), final_frame)
             if prog and total > 0:
                 prog.setValue(60 + int(30 * (i+1) / total))
@@ -119,6 +127,7 @@ def run_mp4_digital_repair(file_path=None, parent=None):
         if parent:
             QMessageBox.information(parent, "完了", f"修復が完了しました:\n{save_path}")
     except Exception as e:
+        print(f"[run_mp4_digital_repair] 修復処理中にエラー: {e}")
         if parent:
             QMessageBox.warning(parent, "エラー", f"修復処理中にエラー:\n{e}")
     finally:

@@ -1,4 +1,16 @@
-# duplicate_finder.py
+"""
+duplicate_finder.py
+ファイル/動画/画像の重複判定・グループ化ユーティリティ。
+
+主な機能:
+- 画像/動画のpHash計算
+- キャッシュ利用による高速化
+- 重複グループの検出
+
+依存:
+- imagehash, OpenCV, numpy, Pillow, os, pickle
+"""
+
 # 重複検査: ファイル/動画/画像の重複判定・グループ化
 import os
 import imagehash

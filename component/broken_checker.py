@@ -1,3 +1,15 @@
+"""
+broken_checker.py
+壊れた動画・画像ファイルの検出・リストアップ用ユーティリティ。
+
+主な機能:
+- 画像/動画ファイルの破損判定
+- フォルダ内の壊れファイル一括検出
+
+依存:
+- OpenCV, Pillow, os
+"""
+
 # broken_checker.py
 # 壊れ検査: 壊れた動画/画像の検出・リストアップ
 
@@ -13,7 +25,8 @@ def is_broken_image(filepath):
         img = Image.open(filepath)
         img.verify()
         return False
-    except Exception:
+    except Exception as e:
+        print(f"[is_broken_image] 壊れ画像判定失敗: {filepath}: {e}")
         return True
 
 def is_broken_video(filepath):
@@ -23,11 +36,15 @@ def is_broken_video(filepath):
     try:
         cap = cv2.VideoCapture(filepath)
         if not cap.isOpened():
+            print(f"[is_broken_video] 動画オープン失敗: {filepath}")
             return True
         ret, _ = cap.read()
         cap.release()
+        if not ret:
+            print(f"[is_broken_video] 動画フレーム読込失敗: {filepath}")
         return not ret
-    except Exception:
+    except Exception as e:
+        print(f"[is_broken_video] 例外: {filepath}: {e}")
         return True
 
 def check_broken_videos(folder, video_exts=None, with_reason=False):
@@ -45,6 +62,7 @@ def check_broken_videos(folder, video_exts=None, with_reason=False):
                 try:
                     cap = cv2.VideoCapture(path)
                     if not cap.isOpened():
+                        print(f"[check_broken_videos] open failed: {path}")
                         if with_reason:
                             broken_files.append((path, "open failed"))
                         else:
@@ -53,11 +71,13 @@ def check_broken_videos(folder, video_exts=None, with_reason=False):
                     ret, _ = cap.read()
                     cap.release()
                     if not ret:
+                        print(f"[check_broken_videos] read failed: {path}")
                         if with_reason:
                             broken_files.append((path, "read failed"))
                         else:
                             broken_files.append(path)
                 except Exception as e:
+                    print(f"[check_broken_videos] exception: {path}: {e}")
                     if with_reason:
                         broken_files.append((path, f"exception: {e}"))
                     else:
@@ -84,6 +104,7 @@ def check_broken_images(folder, image_exts=None, with_reason=False, log_progress
             img = Image.open(path)
             img.verify()
         except Exception as e:
+            print(f"[check_broken_images] 壊れ画像検出: {path}: {e}")
             size = None
             try:
                 size = os.path.getsize(path)

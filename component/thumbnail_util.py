@@ -36,7 +36,8 @@ def load_thumb_cache(folder=None):
         cache_file = get_thumb_cache_file(folder)
         with open(cache_file, "rb") as f:
             thumb_cache.update(pickle.load(f))
-    except Exception:
+    except Exception as e:
+        print(f"[load_thumb_cache] キャッシュ読込失敗: {e}")
         thumb_cache = {}
 
 def save_thumb_cache(folder=None):
@@ -45,8 +46,8 @@ def save_thumb_cache(folder=None):
             cache_file = get_thumb_cache_file(folder)
             with open(cache_file, "wb") as f:
                 pickle.dump(thumb_cache, f)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[save_thumb_cache] キャッシュ保存失敗: {e}")
 
 def get_image_thumbnail(filepath, size=(240,240)):
     key = (filepath, size)
@@ -59,7 +60,8 @@ def get_image_thumbnail(filepath, size=(240,240)):
         with thumb_cache_lock:
             thumb_cache[key] = img.copy()
         return img
-    except Exception:
+    except Exception as e:
+        print(f"[get_image_thumbnail] サムネイル生成失敗: {filepath}: {e}")
         return None
 
 def get_video_thumbnail(filepath, size=(240,240), error_files=None):
@@ -74,6 +76,7 @@ def get_video_thumbnail(filepath, size=(240,240), error_files=None):
         if not ret:
             if error_files is not None:
                 error_files.append(f"{filepath} : 動画フレーム取得失敗")
+            print(f"[get_video_thumbnail] 動画フレーム取得失敗: {filepath}")
             return None
         img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(img)
@@ -84,12 +87,19 @@ def get_video_thumbnail(filepath, size=(240,240), error_files=None):
     except Exception as e:
         if error_files is not None:
             error_files.append(f"{filepath} : {e}")
+        print(f"[get_video_thumbnail] サムネイル生成失敗: {filepath}: {e}")
         return None
 
 def get_thumbnail_for_file(filepath, size=(120, 90), error_files=None):
     ext = os.path.splitext(filepath)[1].lower()
     video_exts = ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
-    if ext in video_exts:
-        return get_video_thumbnail(filepath, size, error_files)
-    else:
-        return get_image_thumbnail(filepath, size)
+    try:
+        if ext in video_exts:
+            return get_video_thumbnail(filepath, size, error_files)
+        else:
+            return get_image_thumbnail(filepath, size)
+    except Exception as e:
+        print(f"[get_thumbnail_for_file] サムネイル取得失敗: {filepath}: {e}")
+        if error_files is not None:
+            error_files.append(f"{filepath} : {e}")
+        return None
