@@ -31,6 +31,26 @@ PyQt5ベースの大規模動画・画像重複検出/修復アプリです。AI
 - サムネイルキャッシュは容量制限・手動削除対応。
 - 詳細は各ソース・関数のdocstring参照。
 
+## 外部バイナリ・モデルのセットアップ
+
+- Real-ESRGAN: `realesrgan-ncnn-vulkan.exe` をルートまたはパスの通った場所に配置。
+    - モデルファイル（例: `models/Real-ESRGAN-General-x4v3.bin`, `.param`）も `models/` フォルダに配置。
+    - [Real-ESRGAN公式リリース](https://github.com/xinntao/Real-ESRGAN/releases) からダウンロード。
+- GFPGAN: `GFPGANv1.4.pth` などのモデルをルートまたは `models/` フォルダに配置。
+    - [GFPGAN公式リリース](https://github.com/TencentARC/GFPGAN/releases) からダウンロード。
+- ffmpeg/ffprobe: パスが通っている必要あり（動画分解・合成・音声抽出に使用）。
+- 詳細は各AIツールの公式READMEも参照。
+
+## 不要ファイル・一時ファイルの削除
+
+- `.bak`, `.tmp`, `.log`, `__pycache__`, `.cache/`, `build/`, `dist/` などは `.gitignore` で除外済み。
+- 残存する一時ファイル・バックアップは手動または `PowerShell` で削除してください。
+
+## テスト自動化・カバレッジ
+
+- `pytest` で `tests/` 配下のテストを自動実行可能。
+- カバレッジ計測例: `pytest --cov=component tests/`
+
 ---
 
 # 開発・保守
