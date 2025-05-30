@@ -3,15 +3,21 @@
 from PyQt5.QtWidgets import QGroupBox, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QWidget, QCheckBox, QDialog, QDialogButtonBox, QMessageBox, QFileDialog
 import os
 import shutil
+from component.thumbnail.thumbnail_util import ThumbnailCache, pil_image_to_qpixmap, get_image_thumbnail, get_video_thumbnail
 
-def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_cb, compare_cb):
+def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_cb, compare_cb, thumb_cache=None):
     group_box = QGroupBox("重複グループ")
     group_layout = QHBoxLayout()
     for f in group:
-        thumb = get_thumbnail_for_file(f)
+        ext = os.path.splitext(f)[1].lower()
+        video_exts = ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
+        if ext in video_exts:
+            pil_thumb = get_video_thumbnail(f, (120, 90), cache=thumb_cache)
+        else:
+            pil_thumb = get_image_thumbnail(f, (120, 90), cache=thumb_cache)
         thumb_label = QLabel()
-        if thumb:
-            thumb_label.setPixmap(thumb.scaled(120, 90))
+        if pil_thumb:
+            thumb_label.setPixmap(pil_image_to_qpixmap(pil_thumb))
         else:
             thumb_label.setText("No Thumbnail")
         thumb_label.setFixedSize(120, 90)
