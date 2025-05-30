@@ -3,6 +3,7 @@
 from PyQt5.QtWidgets import QLabel, QVBoxLayout, QWidget, QDialog, QHBoxLayout, QFileDialog, QMessageBox
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import Qt
+from PIL import ImageQt
 import os
 import shutil
 from component.thumbnail_util import get_thumbnail_for_file
@@ -49,7 +50,8 @@ def add_thumbnail_widget(parent, content_layout, file_path, toggle_select, selec
     thumb = get_thumbnail_for_file(file_path)
     thumb_label = QLabel()
     if thumb:
-        thumb_label.setPixmap(QPixmap.fromImage(thumb).scaled(120, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        qimage = ImageQt.ImageQt(thumb)
+        thumb_label.setPixmap(QPixmap.fromImage(qimage).scaled(120, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation))
     else:
         thumb_label.setText("No Thumbnail")
     thumb_label.setFixedSize(120, 90)

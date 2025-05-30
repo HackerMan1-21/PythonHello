@@ -7,8 +7,8 @@ import numpy as np
 from PIL import Image
 import hashlib
 import pickle
-from component.utils.cache_util import save_cache, load_cache
-from component.utils.file_util import normalize_path
+from component.cache_util import save_cache, load_cache
+from component.file_util import normalize_path
 
 def get_image_phash(filepath, folder=None, cache=None):
     filepath = normalize_path(filepath)
@@ -155,3 +155,30 @@ def group_by_phash(file_hashes, threshold=8):
         if len(group) > 1:
             groups.append(group)
     return groups
+
+def get_image_and_video_files(folder, image_exts=(".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff"), video_exts=(".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".mpg", ".mpeg", ".3gp")):
+    files = []
+    for root, dirs, fs in os.walk(folder):
+        for f in fs:
+            ext = os.path.splitext(f)[1].lower()
+            if ext in image_exts or ext in video_exts:
+                files.append(os.path.join(root, f))
+    return files
+
+def find_duplicates_in_folder(folder, progress_bar=None):
+    image_exts = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff")
+    video_exts = (".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".mpg", ".mpeg", ".3gp")
+    files = get_image_and_video_files(folder, image_exts, video_exts)
+    file_hashes = []
+    total = len(files)
+    for idx, f in enumerate(files):
+        ext = os.path.splitext(f)[1].lower()
+        if ext in image_exts:
+            h = get_image_phash(f, folder)
+        else:
+            h = get_video_phash(f, 7, folder)
+        file_hashes.append((f, h))
+        if progress_bar is not None:
+            progress_bar.setValue(int((idx+1)/total*100))
+    groups = group_by_phash(file_hashes)
+    return groups, None
