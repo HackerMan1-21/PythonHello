@@ -29,46 +29,47 @@ def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_c
     grid = QGridLayout()
     max_col = 4
     for idx, f in enumerate(group):
-        pil_thumb = get_thumbnail_for_file(f, (120, 90), cache=thumb_cache)
+        pil_thumb = get_thumbnail_for_file(f, (180, 180), cache=thumb_cache)
         thumb_btn = QPushButton()
-        thumb_btn.setFixedSize(120, 90)
+        thumb_btn.setFixedSize(180, 180)
         thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
-        thumb_btn.setIconSize(QSize(120, 90))
+        thumb_btn.setIconSize(QSize(180, 180))
         thumb_btn.setStyleSheet("background:transparent;border:2px solid #00ffe7;border-radius:10px;")
         thumb_btn.clicked.connect(lambda _, path=f: detail_cb(path))
         fname = os.path.basename(f)
-        maxlen = 18
-        fname_disp = fname[:8] + '...' + fname[-7:] if len(fname) > maxlen else fname
+        maxlen = 36
+        fname_disp = fname[:16] + '...' + fname[-13:] if len(fname) > maxlen else fname
         name_label = QLabel(fname_disp)
         name_label.setAlignment(Qt.AlignCenter)
-        name_label.setStyleSheet("font-size:12px;color:#00ffe7;font-weight:bold;")
-        try:
-            size = os.path.getsize(f)
-            size_mb = size / 1024 / 1024
-            size_str = f"{size_mb:.2f} MB"
-        except Exception:
-            size_str = "-"
-        size_label = QLabel(size_str)
-        size_label.setAlignment(Qt.AlignCenter)
-        size_label.setStyleSheet("font-size:11px;color:#00ff99;")
+        name_label.setStyleSheet("font-size:12px;color:#00ffe7;font-weight:bold;max-width:180px;")
+        name_label.setWordWrap(True)
         path_label = QLabel(f)
         path_label.setAlignment(Qt.AlignCenter)
         path_label.setWordWrap(True)
-        path_label.setStyleSheet("font-size:10px;color:#00ff99;max-width:140px;")
+        path_label.setStyleSheet("font-size:10px;color:#00ff99;max-width:180px;")
         path_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextBrowserInteraction)
         def open_folder(event, path=f):
-            folder = os.path.dirname(path)
+            import os
+            import subprocess
+            print(f"DEBUG: open_folder clicked: {path}")
+            path = os.path.abspath(os.path.normpath(path))
+            if os.path.isdir(path):
+                folder = path
+            else:
+                folder = os.path.dirname(path)
+            print(f"DEBUG: open_folder will open: {folder}")
             if os.path.exists(folder):
-                import subprocess
                 subprocess.Popen(f'explorer "{folder}"')
         path_label.mousePressEvent = open_folder
         del_btn = QPushButton("削除")
-        del_btn.setStyleSheet("font-size:12px;color:#ff00c8;")
+        del_btn.setStyleSheet("font-size:12px;color:#ff00c8;max-width:180px;")
+        del_btn.setFixedWidth(180)
         del_btn.clicked.connect(lambda _, path=f: delete_cb(path))
         vbox = QVBoxLayout()
+        vbox.setSpacing(2)
+        vbox.setContentsMargins(2, 2, 2, 2)
         vbox.addWidget(thumb_btn)
         vbox.addWidget(name_label)
-        vbox.addWidget(size_label)
         vbox.addWidget(path_label)
         vbox.addWidget(del_btn)
         file_widget = QWidget()
@@ -93,11 +94,11 @@ def show_face_grouping_dialog(parent, groups, move_selected_files_to_folder_func
         group_box = QGroupBox("顔グループ")
         grid = QGridLayout()
         for idx, f in enumerate(group):
-            pil_thumb = get_thumbnail_for_file(f, (120, 90), cache=thumb_cache)
+            pil_thumb = get_thumbnail_for_file(f, (180, 180), cache=thumb_cache)
             thumb_btn = QPushButton()
-            thumb_btn.setFixedSize(120, 90)
+            thumb_btn.setFixedSize(180, 180)
             thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
-            thumb_btn.setIconSize(QSize(120, 90))
+            thumb_btn.setIconSize(QSize(180, 180))
             thumb_btn.setStyleSheet("background:transparent;border:2px solid #00ff99;border-radius:10px;")
             fname = os.path.basename(f)
             maxlen = 18
@@ -120,9 +121,16 @@ def show_face_grouping_dialog(parent, groups, move_selected_files_to_folder_func
             path_label.setStyleSheet("font-size:10px;color:#00ff99;max-width:140px;")
             path_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextBrowserInteraction)
             def open_folder(event, path=f):
-                folder = os.path.dirname(path)
+                import os
+                import subprocess
+                print(f"DEBUG: open_folder clicked: {path}")
+                path = os.path.abspath(os.path.normpath(path))
+                if os.path.isdir(path):
+                    folder = path
+                else:
+                    folder = os.path.dirname(path)
+                print(f"DEBUG: open_folder will open: {folder}")
                 if os.path.exists(folder):
-                    import subprocess
                     subprocess.Popen(f'explorer "{folder}"')
             path_label.mousePressEvent = open_folder
             cb = QCheckBox("選択")
@@ -188,11 +196,11 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
         group_box = QGroupBox("壊れ動画グループ")
         grid = QGridLayout()
         for idx, f in enumerate(group):
-            pil_thumb = get_thumbnail_for_file(f, (120, 90), cache=thumb_cache)
+            pil_thumb = get_thumbnail_for_file(f, (180, 180), cache=thumb_cache)
             thumb_btn = QPushButton()
-            thumb_btn.setFixedSize(120, 90)
+            thumb_btn.setFixedSize(180, 180)
             thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
-            thumb_btn.setIconSize(QSize(120, 90))
+            thumb_btn.setIconSize(QSize(180, 180))
             thumb_btn.setStyleSheet("background:transparent;border:2px solid #ff4444;border-radius:10px;")
             fname = os.path.basename(f)
             maxlen = 18
@@ -215,9 +223,16 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
             path_label.setStyleSheet("font-size:10px;color:#00ff99;max-width:140px;")
             path_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextBrowserInteraction)
             def open_folder(event, path=f):
-                folder = os.path.dirname(path)
+                import os
+                import subprocess
+                print(f"DEBUG: open_folder clicked: {path}")
+                path = os.path.abspath(os.path.normpath(path))
+                if os.path.isdir(path):
+                    folder = path
+                else:
+                    folder = os.path.dirname(path)
+                print(f"DEBUG: open_folder will open: {folder}")
                 if os.path.exists(folder):
-                    import subprocess
                     subprocess.Popen(f'explorer "{folder}"')
             path_label.mousePressEvent = open_folder
             repair_btn = QPushButton("修復")

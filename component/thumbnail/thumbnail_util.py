@@ -105,17 +105,17 @@ def pil_image_to_qpixmap(img):
     qimg = QImage(data, img.width, img.height, QImage.Format_RGB888)
     return QPixmap.fromImage(qimg)
 
-def get_no_thumbnail_image(size=(120, 90)):
+def get_no_thumbnail_image(size=(180, 90)):
     img = Image.new("RGB", size, (60, 60, 60))
     draw = ImageDraw.Draw(img)
     w, h = size
     # バツ印
     draw.line((10, 10, w-10, h-10), fill=(200, 80, 80), width=6)
     draw.line((w-10, 10, 10, h-10), fill=(200, 80, 80), width=6)
-    draw.rectangle((0, 0, w-1, h-1), outline=(120, 120, 120), width=2)
+    draw.rectangle((0, 0, w-1, h-1), outline=(180, 180, 180), width=2)
     return img
 
-def get_image_thumbnail(filepath, size=(240,240), cache=None):
+def get_image_thumbnail(filepath, size=(180,180), cache=None):
     key = (filepath, size)
     if cache is not None:
         thumb = cache.get(key)
@@ -123,14 +123,19 @@ def get_image_thumbnail(filepath, size=(240,240), cache=None):
             return thumb
     try:
         img = Image.open(filepath).convert("RGB")
+        # アスペクト比維持でリサイズ
         img.thumbnail(size, Image.LANCZOS)
+        # 正方形キャンバスに中央配置
+        bg = Image.new("RGB", size, (60, 60, 60))
+        offset = ((size[0] - img.width) // 2, (size[1] - img.height) // 2)
+        bg.paste(img, offset)
         if cache is not None:
-            cache.set(key, img.copy())
-        return img
+            cache.set(key, bg.copy())
+        return bg
     except Exception:
         return get_no_thumbnail_image(size)
 
-def get_video_thumbnail(filepath, size=(240,240), error_files=None, cache=None):
+def get_video_thumbnail(filepath, size=(180,180), error_files=None, cache=None):
     key = (filepath, size)
     if cache is not None:
         thumb = cache.get(key)
@@ -147,15 +152,19 @@ def get_video_thumbnail(filepath, size=(240,240), error_files=None, cache=None):
         img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(img)
         pil_img.thumbnail(size, Image.LANCZOS)
+        # 正方形キャンバスに中央配置
+        bg = Image.new("RGB", size, (60, 60, 60))
+        offset = ((size[0] - pil_img.width) // 2, (size[1] - pil_img.height) // 2)
+        bg.paste(pil_img, offset)
         if cache is not None:
-            cache.set(key, pil_img.copy())
-        return pil_img
+            cache.set(key, bg.copy())
+        return bg
     except Exception as e:
         if error_files is not None:
             error_files.append(f"{filepath} : {e}")
         return get_no_thumbnail_image(size)
 
-def get_thumbnail_for_file(filepath, size=(120, 90), error_files=None, cache=None):
+def get_thumbnail_for_file(filepath, size=(180, 90), error_files=None, cache=None):
     ext = os.path.splitext(filepath)[1].lower()
     video_exts = ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
     if ext in video_exts:
@@ -181,6 +190,22 @@ class ThumbnailWorker(threading.Thread):
                 get_image_thumbnail(path, size, self.cache)
             self.update_cb(path)
             self.q.task_done()
+
+def start_thumbnail_workers(q, update_cb, cache=None, num_workers=4):
+    """
+    サムネイル生成ワーカーを複数スレッドで起動する。
+    q: Queueインスタンス
+    update_cb: サムネイル生成後のコールバック
+    cache: サムネイルキャッシュ
+    num_workers: 起動するワーカースレッド数
+    戻り値: [ThumbnailWorker, ...]
+    """
+    workers = []
+    for _ in range(num_workers):
+        worker = ThumbnailWorker(q, update_cb, cache)
+        worker.start()
+        workers.append(worker)
+    return workers
 
 def load_thumb_cache(folder=None):
     """
