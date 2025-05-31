@@ -60,11 +60,32 @@ cache/
 /tests/__pycache__/
 /component/__pycache__/
 
-# 仮想環境・パッケージ
-movieEditor/
-*.lib
+# PyTorch/AI/バイナリ関連
+BasicSR/
+models/
 *.dll
+*.lib
 *.so
 *.pyd
 *.whl
 *.egg-info
+# 仮想環境
+movieEditor/
+# キャッシュ・一時ファイル
+__pycache__/
+.cache/
+.cache
+.cache/*
+.cache_*
+*.pyc
+*.pyo
+*.bak
+*.tmp
+*.log
+*.swp
+*.swo
+*.DS_Store
+*.pkl
+*.pickle
+*.db
+*.sqlite3
