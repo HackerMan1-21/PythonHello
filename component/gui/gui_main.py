@@ -39,12 +39,12 @@ from PyQt5.QtGui import QPixmap, QImage, QIcon
 from PyQt5.QtCore import Qt, QSize, QTimer
 
 from component.duplicate_finder import find_duplicates_in_folder, get_image_and_video_files
-from component.thumbnail_util import get_thumbnail_for_file, load_thumb_cache, save_thumb_cache
-from component.file_util import move_to_trash, get_folder_state
+from component.thumbnail.thumbnail_util import get_thumbnail_for_file, load_thumb_cache, save_thumb_cache
+from component.utils.file_util import move_to_trash, get_folder_state
 from component.face_grouping import group_by_face_and_move, get_face_groups
 from component.broken_checker import check_broken_videos
 from component.ffmpeg_util import show_mp4_tool_dialog, repair_mp4, convert_mp4
-from component.ai_tools import digital_repair
+from component.ai.ai_tools import digital_repair
 from component.ui_util import show_detail_dialog, show_compare_dialog, add_thumbnail_widget, update_progress, drag_enter_event, drop_event, delete_selected_dialog, get_save_file_path, show_info_dialog, show_warning_dialog, show_question_dialog
 from component.group_ui import create_duplicate_group_ui, show_face_grouping_dialog, move_selected_files_to_folder, show_broken_video_dialog
 from component.thumbnail.thumbnail_util import ThumbnailCache

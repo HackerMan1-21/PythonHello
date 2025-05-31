@@ -2,7 +2,7 @@ import os
 import tempfile
 from PIL import Image
 import pytest
-from component.thumbnail_util import get_image_thumbnail, get_video_thumbnail
+from component.thumbnail.thumbnail_util import get_image_thumbnail, get_video_thumbnail
 import cv2
 import numpy as np
 

@@ -40,3 +40,25 @@ def move_to_trash(filepath):
 
 def shutil_move(src, dst):
     shutil.move(src, dst)
+
+def get_folder_state(folder):
+    """
+    指定フォルダ内のファイル数・合計サイズ・最終更新日時を返す。
+    戻り値: (ファイル数, 合計バイト数, 最終更新日時)
+    """
+    import os
+    total_files = 0
+    total_bytes = 0
+    last_modified = 0
+    for root, dirs, files in os.walk(folder):
+        for f in files:
+            path = os.path.join(root, f)
+            try:
+                stat = os.stat(path)
+                total_files += 1
+                total_bytes += stat.st_size
+                if stat.st_mtime > last_modified:
+                    last_modified = stat.st_mtime
+            except Exception:
+                pass
+    return total_files, total_bytes, last_modified

@@ -19,8 +19,8 @@ import numpy as np
 from PIL import Image
 import hashlib
 import pickle
-from component.cache_util import save_cache, load_cache
-from component.file_util import normalize_path
+from component.utils.cache_util import save_cache, load_cache
+from component.utils.file_util import normalize_path
 
 def get_image_phash(filepath, folder=None, cache=None):
     filepath = normalize_path(filepath)

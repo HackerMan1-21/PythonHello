@@ -9,7 +9,7 @@ UI部品生成・グループUI構築・比較再生・詳細ダイアログな�
 - 進捗表示・各種メッセージダイアログ
 
 依存:
-- PyQt5, Pillow, component.thumbnail_util, component.file_util
+- PyQt5, Pillow, component.thumbnail.thumbnail_util, component.utils.file_util
 """
 
 # component/ui_util.py
@@ -17,11 +17,11 @@ UI部品生成・グループUI構築・比較再生・詳細ダイアログな�
 from PyQt5.QtWidgets import QLabel, QVBoxLayout, QWidget, QDialog, QHBoxLayout, QFileDialog, QMessageBox
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import Qt
-from PIL import ImageQt
+from PIL.ImageQt import ImageQt
 import os
 import shutil
-from component.thumbnail_util import get_thumbnail_for_file
-from component.file_util import move_to_trash
+from component.thumbnail.thumbnail_util import get_thumbnail_for_file
+from component.utils.file_util import move_to_trash
 
 def show_detail_dialog(parent, file_path):
     info = f"パス: {file_path}\n"
@@ -69,7 +69,7 @@ def add_thumbnail_widget(parent, content_layout, file_path, toggle_select, selec
         thumb = None
     thumb_label = QLabel()
     if thumb:
-        qimage = ImageQt.ImageQt(thumb)
+        qimage = ImageQt(thumb)
         thumb_label.setPixmap(QPixmap.fromImage(qimage).scaled(120, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation))
     else:
         thumb_label.setText("No Thumbnail")

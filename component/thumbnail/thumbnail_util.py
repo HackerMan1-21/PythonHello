@@ -171,3 +171,17 @@ class ThumbnailWorker(threading.Thread):
                 get_image_thumbnail(path, size, self.cache)
             self.update_cb(path)
             self.q.task_done()
+
+def load_thumb_cache(folder=None):
+    """
+    サムネイルキャッシュを指定フォルダでロードし、ThumbnailCacheインスタンスを返す。
+    """
+    cache = ThumbnailCache(folder)
+    cache.load()
+    return cache
+
+def save_thumb_cache(cache):
+    """
+    サムネイルキャッシュを保存する。
+    """
+    cache.save()

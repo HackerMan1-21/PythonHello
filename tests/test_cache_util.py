@@ -2,7 +2,7 @@ import os
 import tempfile
 import shutil
 import pytest
-from component.cache_util import save_cache, load_cache
+from component.utils.cache_util import save_cache, load_cache
 
 def test_save_and_load_cache():
     data = b"testdata123"

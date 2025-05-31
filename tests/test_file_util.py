@@ -2,7 +2,7 @@ import os
 import tempfile
 import shutil
 import pytest
-from component.file_util import move_to_trash, normalize_path, get_folder_state
+from component.utils.file_util import move_to_trash, normalize_path, get_folder_state
 
 def test_normalize_path():
     assert os.path.isabs(normalize_path("."))
