@@ -23,23 +23,24 @@ import os
 import shutil
 from component.thumbnail.thumbnail_util import get_thumbnail_for_file, pil_image_to_qpixmap
 
-def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_cb, compare_cb, thumb_cache=None):
-    print("DEBUG: create_duplicate_group_ui called", group, thumb_cache, delete_cb)
+def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_cb, compare_cb, thumb_cache=None, defer_queue=None, thumb_widget_map=None):
     group_box = QGroupBox("重複グループ")
     grid = QGridLayout()
+    grid.setHorizontalSpacing(12)
+    grid.setVerticalSpacing(16)
     max_col = 4
     for idx, f in enumerate(group):
-        pil_thumb = get_thumbnail_for_file(f, (180, 180), cache=thumb_cache)
+        pil_thumb = get_thumbnail_for_file(f, (180, 180), cache=thumb_cache, defer_queue=defer_queue)
         thumb_btn = QPushButton()
         thumb_btn.setFixedSize(180, 180)
         thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
         thumb_btn.setIconSize(QSize(180, 180))
         thumb_btn.setStyleSheet("background:transparent;border:2px solid #00ffe7;border-radius:10px;")
         thumb_btn.clicked.connect(lambda _, path=f: detail_cb(path))
+        if thumb_widget_map is not None:
+            thumb_widget_map[f] = thumb_btn
         fname = os.path.basename(f)
-        maxlen = 36
-        fname_disp = fname[:16] + '...' + fname[-13:] if len(fname) > maxlen else fname
-        name_label = QLabel(fname_disp)
+        name_label = QLabel(fname)
         name_label.setAlignment(Qt.AlignCenter)
         name_label.setStyleSheet("font-size:12px;color:#00ffe7;font-weight:bold;max-width:180px;")
         name_label.setWordWrap(True)
@@ -49,17 +50,17 @@ def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_c
         path_label.setStyleSheet("font-size:10px;color:#00ff99;max-width:180px;")
         path_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextBrowserInteraction)
         def open_folder(event, path=f):
-            import os
-            import subprocess
-            print(f"DEBUG: open_folder clicked: {path}")
-            path = os.path.abspath(os.path.normpath(path))
-            if os.path.isdir(path):
-                folder = path
-            else:
-                folder = os.path.dirname(path)
-            print(f"DEBUG: open_folder will open: {folder}")
+            import os, subprocess, sys
+            folder = os.path.dirname(path)
             if os.path.exists(folder):
-                subprocess.Popen(f'explorer "{folder}"')
+                try:
+                    os.startfile(folder)
+                except AttributeError:
+                    # 非Windows環境用
+                    if sys.platform == "darwin":
+                        subprocess.Popen(["open", folder])
+                    else:
+                        subprocess.Popen(["xdg-open", folder])
         path_label.mousePressEvent = open_folder
         del_btn = QPushButton("削除")
         del_btn.setStyleSheet("font-size:12px;color:#ff00c8;max-width:180px;")
@@ -78,9 +79,10 @@ def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_c
         col = idx % max_col
         grid.addWidget(file_widget, row, col)
     group_box.setLayout(grid)
+    print("DEBUG: create_duplicate_group_ui returning", group_box)
     return group_box
 
-def show_face_grouping_dialog(parent, groups, move_selected_files_to_folder_func, delete_cb=None, thumb_cache=None):
+def show_face_grouping_dialog(parent, groups, move_selected_files_to_folder_func, delete_cb=None, thumb_cache=None, defer_queue=None):
     print("DEBUG: show_face_grouping_dialog called", groups, thumb_cache, delete_cb)
     if not groups:
         QMessageBox.information(parent, "顔グループ化", "顔グループは見つかりませんでした")
@@ -94,7 +96,7 @@ def show_face_grouping_dialog(parent, groups, move_selected_files_to_folder_func
         group_box = QGroupBox("顔グループ")
         grid = QGridLayout()
         for idx, f in enumerate(group):
-            pil_thumb = get_thumbnail_for_file(f, (180, 180), cache=thumb_cache)
+            pil_thumb = get_thumbnail_for_file(f, (180, 180), cache=thumb_cache, defer_queue=defer_queue)
             thumb_btn = QPushButton()
             thumb_btn.setFixedSize(180, 180)
             thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
@@ -182,7 +184,7 @@ def move_selected_files_to_folder(checkboxes, parent):
         QMessageBox.information(parent, "移動完了", "選択したファイルを移動しました")
     parent.accept()
 
-def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_convert, run_mp4_digital_repair, thumb_cache=None):
+def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_convert, run_mp4_digital_repair, thumb_cache=None, defer_queue=None):
     print("DEBUG: show_broken_video_dialog called", broken_groups, thumb_cache)
     if not broken_groups:
         from component.ui_util import show_info_dialog
@@ -196,7 +198,7 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
         group_box = QGroupBox("壊れ動画グループ")
         grid = QGridLayout()
         for idx, f in enumerate(group):
-            pil_thumb = get_thumbnail_for_file(f, (180, 180), cache=thumb_cache)
+            pil_thumb = get_thumbnail_for_file(f, (180, 180), cache=thumb_cache, defer_queue=defer_queue)
             thumb_btn = QPushButton()
             thumb_btn.setFixedSize(180, 180)
             thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))

@@ -105,7 +105,7 @@ def pil_image_to_qpixmap(img):
     qimg = QImage(data, img.width, img.height, QImage.Format_RGB888)
     return QPixmap.fromImage(qimg)
 
-def get_no_thumbnail_image(size=(180, 90)):
+def get_no_thumbnail_image(size=(180, 180)):
     img = Image.new("RGB", size, (60, 60, 60))
     draw = ImageDraw.Draw(img)
     w, h = size
@@ -115,17 +115,19 @@ def get_no_thumbnail_image(size=(180, 90)):
     draw.rectangle((0, 0, w-1, h-1), outline=(180, 180, 180), width=2)
     return img
 
-def get_image_thumbnail(filepath, size=(180,180), cache=None):
+def get_image_thumbnail(filepath, size=(180,180), cache=None, defer_queue=None, is_video=False, error_files=None):
     key = (filepath, size)
     if cache is not None:
         thumb = cache.get(key)
         if thumb is not None:
             return thumb
+    # defer_queueが指定されていれば、生成リクエストを積んで仮サムネを返す
+    if defer_queue is not None:
+        defer_queue.put((filepath, size, is_video, error_files))
+        return get_no_thumbnail_image(size)
     try:
         img = Image.open(filepath).convert("RGB")
-        # アスペクト比維持でリサイズ
         img.thumbnail(size, Image.LANCZOS)
-        # 正方形キャンバスに中央配置
         bg = Image.new("RGB", size, (60, 60, 60))
         offset = ((size[0] - img.width) // 2, (size[1] - img.height) // 2)
         bg.paste(img, offset)
@@ -135,12 +137,15 @@ def get_image_thumbnail(filepath, size=(180,180), cache=None):
     except Exception:
         return get_no_thumbnail_image(size)
 
-def get_video_thumbnail(filepath, size=(180,180), error_files=None, cache=None):
+def get_video_thumbnail(filepath, size=(180,180), error_files=None, cache=None, defer_queue=None):
     key = (filepath, size)
     if cache is not None:
         thumb = cache.get(key)
         if thumb is not None:
             return thumb
+    if defer_queue is not None:
+        defer_queue.put((filepath, size, True, error_files))
+        return get_no_thumbnail_image(size)
     try:
         cap = cv2.VideoCapture(filepath)
         ret, frame = cap.read()
@@ -152,7 +157,6 @@ def get_video_thumbnail(filepath, size=(180,180), error_files=None, cache=None):
         img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(img)
         pil_img.thumbnail(size, Image.LANCZOS)
-        # 正方形キャンバスに中央配置
         bg = Image.new("RGB", size, (60, 60, 60))
         offset = ((size[0] - pil_img.width) // 2, (size[1] - pil_img.height) // 2)
         bg.paste(pil_img, offset)
@@ -164,13 +168,13 @@ def get_video_thumbnail(filepath, size=(180,180), error_files=None, cache=None):
             error_files.append(f"{filepath} : {e}")
         return get_no_thumbnail_image(size)
 
-def get_thumbnail_for_file(filepath, size=(180, 90), error_files=None, cache=None):
+def get_thumbnail_for_file(filepath, size=(180, 90), error_files=None, cache=None, defer_queue=None):
     ext = os.path.splitext(filepath)[1].lower()
     video_exts = ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
     if ext in video_exts:
-        return get_video_thumbnail(filepath, size, error_files, cache)
+        return get_video_thumbnail(filepath, size, error_files, cache, defer_queue)
     else:
-        return get_image_thumbnail(filepath, size, cache)
+        return get_image_thumbnail(filepath, size, cache, defer_queue, is_video=False, error_files=error_files)
 
 class ThumbnailWorker(threading.Thread):
     def __init__(self, q, update_cb, cache=None):
