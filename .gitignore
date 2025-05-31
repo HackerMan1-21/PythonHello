@@ -3,43 +3,27 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-*.bak
-*.tmp
-*.log
-*.swp
-*.swo
-*.DS_Store
-.cache/
-.cache
-.cache/*
-.cache_*
 *.pkl
 *.pickle
 *.db
 *.sqlite3
 
-# VSCode
-.vscode/
+# キャッシュ・一時ファイル
+.cache/
+*.tmp
+*.log
+*.bak
+*.swp
+*.swo
+.realesrgan_debug.log
 
 # Windows
 Thumbs.db
 Desktop.ini
+*.DS_Store
 
-# バイナリ・モデル・外部ツール
-*.exe
-*.dll
-*.bin
-*.param
-
-# テスト出力
-htmlcov/
-.coverage
-*.cover
-.cache
-
-# その他
-realesrgan_debug.log
-start_app.bat*
+# 仮想環境（プロジェクト固有）
+movieEditor/
 
 # ビルド/配布物
 build/
@@ -47,45 +31,31 @@ dist/
 *.spec
 *.egg-info/
 
+# バイナリ・モデル・外部ツール
+*.exe
+*.dll
+*.bin
+*.param
+*.lib
+*.so
+*.whl
+*.pyd
+
+# IDE・エディタ
+.vscode/
+.idea/
+
 # Jupyter
 .ipynb_checkpoints/
 
-# IDE
-.idea/
-
-# プロジェクト固有
-cache/
-
-# テスト
+# テスト関連
 /tests/__pycache__/
-/component/__pycache__/
+htmlcov/
+.coverage
+*.cover
 
-# PyTorch/AI/バイナリ関連
+# その他
+start_app.bat*
+cache/
 BasicSR/
 models/
-*.dll
-*.lib
-*.so
-*.pyd
-*.whl
-*.egg-info
-# 仮想環境
-movieEditor/
-# キャッシュ・一時ファイル
-__pycache__/
-.cache/
-.cache
-.cache/*
-.cache_*
-*.pyc
-*.pyo
-*.bak
-*.tmp
-*.log
-*.swp
-*.swo
-*.DS_Store
-*.pkl
-*.pickle
-*.db
-*.sqlite3
