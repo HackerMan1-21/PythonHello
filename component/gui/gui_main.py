@@ -334,7 +334,34 @@ class DuplicateFinderGUI(QWidget):
 
     def toggle_view_mode(self):
         if self.current_view_mode == 0:
-            self.stacked.setCurrentIndex(1)
+            # 仮想UIに切り替え
+            # 既存の仮想UI用ウィジェットを削除
+            if hasattr(self, 'virtual_grid_widget') and self.virtual_grid_widget:
+                self.stacked.removeWidget(self.virtual_grid_widget)
+                self.virtual_grid_widget.deleteLater()
+            # 仮想UI用グリッドを生成
+            virtual_grid_widget = QWidget()
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(12)
+            grid.setVerticalSpacing(16)
+            max_col = 4
+            row = 0
+            col = 0
+            if hasattr(self, 'group_widgets') and self.group_widgets:
+                for group_box in self.group_widgets:
+                    g = group_box.layout()
+                    for i in range(g.count()):
+                        file_widget = g.itemAt(i).widget()
+                        if file_widget:
+                            grid.addWidget(file_widget, row, col)
+                            col += 1
+                            if col >= max_col:
+                                col = 0
+                                row += 1
+            virtual_grid_widget.setLayout(grid)
+            self.virtual_grid_widget = virtual_grid_widget
+            self.stacked.addWidget(virtual_grid_widget)
+            self.stacked.setCurrentWidget(virtual_grid_widget)
             self.toggle_view_btn.setText("グリッドUIに切替")
             self.current_view_mode = 1
         else:
@@ -355,39 +382,43 @@ class DuplicateFinderGUI(QWidget):
         update_progress(self.progress, 0, self.progress_time_label, self.eta_label, 0)
         start_time = time.time()
         self.load_thumb_cache(folder)
-        duplicates, progress_iter = find_duplicates_in_folder(folder, self.progress)
-        self.clear_content()
-        if not duplicates:
-            self.content_layout.addWidget(QLabel("重複ファイルは見つかりませんでした"))
-            print("DEBUG: find_duplicates end (no duplicates)")
-            return
-        self.group_widgets = []
-        self.thumb_widget_map = {}
-        self.thumb_cache = ThumbnailCache(folder)
-        # --- グリッドUI用 ---
-        self.stacked.setCurrentIndex(0)  # 必ずグリッドUIを表示
-        print("DEBUG: stacked.setCurrentIndex(0) called")
-        for group in duplicates:
-            group_box = create_duplicate_group_ui(
-                group,
-                get_thumbnail_for_file,
-                show_detail_dialog,
-                self.delete_single_file,
-                show_compare_dialog,
-                thumb_cache=self.thumb_cache,
-                defer_queue=self.thumb_queue,
-                thumb_widget_map=self.thumb_widget_map
-            )
-            print("DEBUG: group_box created", group_box)
-            group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #00ffe7; border-radius: 12px; padding: 8px;")
-            self.content_layout.addWidget(group_box)
-            self.group_widgets.append(group_box)
-        self.delete_btn.setEnabled(False)
-        elapsed = time.time() - start_time
-        update_progress(self.progress, 100, self.progress_time_label, self.eta_label, elapsed)
-        self.save_thumb_cache(folder)
-        self.cancel_btn.setEnabled(False)
-        print("DEBUG: find_duplicates end")
+        # --- 非同期で重複検出・サムネイル生成 ---
+        def run_detection():
+            duplicates, progress_iter = find_duplicates_in_folder(folder, self.progress)
+            def update_ui():
+                self.clear_content()
+                if not duplicates:
+                    self.content_layout.addWidget(QLabel("重複ファイルは見つかりませんでした"))
+                    print("DEBUG: find_duplicates end (no duplicates)")
+                    return
+                self.group_widgets = []
+                self.thumb_widget_map = {}
+                self.thumb_cache = ThumbnailCache(folder)
+                self.stacked.setCurrentIndex(0)
+                print("DEBUG: stacked.setCurrentIndex(0) called")
+                for group in duplicates:
+                    group_box = create_duplicate_group_ui(
+                        group,
+                        get_thumbnail_for_file,
+                        show_detail_dialog,
+                        self.delete_single_file,
+                        show_compare_dialog,
+                        thumb_cache=self.thumb_cache,
+                        defer_queue=self.thumb_queue,
+                        thumb_widget_map=self.thumb_widget_map
+                    )
+                    print("DEBUG: group_box created", group_box)
+                    group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #00ffe7; border-radius: 12px; padding: 8px;")
+                    self.content_layout.addWidget(group_box)
+                    self.group_widgets.append(group_box)
+                self.delete_btn.setEnabled(False)
+                elapsed = time.time() - start_time
+                update_progress(self.progress, 100, self.progress_time_label, self.eta_label, elapsed)
+                self.save_thumb_cache(folder)
+                self.cancel_btn.setEnabled(False)
+                print("DEBUG: find_duplicates end")
+            QApplication.instance().invokeMethod(self, update_ui)
+        threading.Thread(target=run_detection, daemon=True).start()
 
     def reload_folder(self):
         # 再読み込み処理
