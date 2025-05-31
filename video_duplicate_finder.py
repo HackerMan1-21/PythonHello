@@ -22,6 +22,7 @@ from component.ai.face_grouping import get_face_encoding, get_video_face_encodin
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, QListWidget, QMessageBox, QScrollArea, QGroupBox, QProgressBar, QInputDialog, QDialog, QGridLayout, QLineEdit, QDialogButtonBox, QListWidgetItem, QProgressDialog, QCheckBox)
 from PyQt5.QtGui import QPixmap, QImage, QCursor, QIcon
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject, QSize, QTimer
+import component.group_ui
 
 # logging設定（1回のみ）
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
@@ -63,6 +64,8 @@ except ImportError:
 # DuplicateFinderGUI クラスは component/gui_main.py へ移動
 
 # --- 依存関数・クラスはすべて component/ 配下からimportする形に整理済み ---
+
+print("DEBUG: sys.path =", sys.path)
 
 if __name__ == "__main__":
     import traceback

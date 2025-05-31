@@ -16,6 +16,9 @@ try:
     import face_recognition
 except ImportError:
     face_recognition = None
+from component.thumbnail.thumbnail_util import get_thumbnail_for_file, pil_image_to_qpixmap
+from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QGridLayout, QLabel, QPushButton, QWidget, QDialog, QDialogButtonBox
+from PyQt5.QtCore import Qt
 
 def get_face_groups(file_list):
     if face_recognition is None:
@@ -55,3 +58,53 @@ def group_by_face_and_move(file_list, out_dir):
                 shutil.move(f, group_dir)
             except Exception:
                 continue
+
+def show_face_grouping_dialog(parent, groups, move_selected_files_to_folder_func):
+    if not groups:
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.information(parent, "顔グループ化", "顔グループは見つかりませんでした")
+        return
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("顔グループごとに個別振り分け")
+    vbox = QVBoxLayout()
+    group_checkboxes = []
+    for group in groups:
+        group_box = QGroupBox("顔グループ")
+        grid = QGridLayout()
+        for idx, f in enumerate(group):
+            pil_thumb = get_thumbnail_for_file(f, (120, 90))
+            thumb_label = QLabel()
+            thumb_label.setPixmap(pil_image_to_qpixmap(pil_thumb))
+            thumb_label.setFixedSize(120, 90)
+            name_label = QLabel(os.path.basename(f))
+            name_label.setStyleSheet("font-size:13px;color:#00ffe7;")
+            path_label = QLabel(f)
+            path_label.setStyleSheet("font-size:10px;color:#00ff99;max-width:140px;")
+            path_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextBrowserInteraction)
+            path_label.setWordWrap(True)
+            def open_folder(event, path=f):
+                folder = os.path.dirname(path)
+                if os.path.exists(folder):
+                    import subprocess
+                    subprocess.Popen(f'explorer "{folder}"')
+            path_label.mousePressEvent = open_folder
+            cb = QPushButton("移動")
+            cb.setStyleSheet("font-size:12px;color:#ffb300;")
+            cb.clicked.connect(lambda _, path=f: move_selected_files_to_folder_func([(True, path)], dlg))
+            vbox2 = QVBoxLayout()
+            vbox2.addWidget(thumb_label)
+            vbox2.addWidget(name_label)
+            vbox2.addWidget(path_label)
+            vbox2.addWidget(cb)
+            file_widget = QWidget()
+            file_widget.setLayout(vbox2)
+            row = idx // 4
+            col = idx % 4
+            grid.addWidget(file_widget, row, col)
+        group_box.setLayout(grid)
+        vbox.addWidget(group_box)
+    btns = QDialogButtonBox(QDialogButtonBox.Close)
+    btns.rejected.connect(dlg.reject)
+    vbox.addWidget(btns)
+    dlg.setLayout(vbox)
+    dlg.exec_()

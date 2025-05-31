@@ -25,3 +25,15 @@ def test_get_video_thumbnail():
         thumb = get_video_thumbnail(video_path, (16, 16))
         assert thumb is not None
         assert thumb.size == (16, 16) or thumb.size[0] <= 16 and thumb.size[1] <= 16
+
+def test_get_image_thumbnail_broken():
+    # 存在しないファイルでもダミー画像が返る
+    thumb = get_image_thumbnail("not_exist.png", (32, 32))
+    assert thumb is not None
+    assert thumb.size == (32, 32) or (thumb.size[0] <= 32 and thumb.size[1] <= 32)
+
+def test_get_video_thumbnail_broken():
+    # 存在しない動画でもダミー画像が返る
+    thumb = get_video_thumbnail("not_exist.avi", (16, 16))
+    assert thumb is not None
+    assert thumb.size == (16, 16) or (thumb.size[0] <= 16 and thumb.size[1] <= 16)

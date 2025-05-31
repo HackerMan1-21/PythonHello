@@ -3,7 +3,7 @@
 import os
 import threading
 import pickle
-from PIL import Image
+from PIL import Image, ImageDraw
 import cv2
 from PyQt5.QtGui import QPixmap, QImage
 import time
@@ -105,6 +105,16 @@ def pil_image_to_qpixmap(img):
     qimg = QImage(data, img.width, img.height, QImage.Format_RGB888)
     return QPixmap.fromImage(qimg)
 
+def get_no_thumbnail_image(size=(120, 90)):
+    img = Image.new("RGB", size, (60, 60, 60))
+    draw = ImageDraw.Draw(img)
+    w, h = size
+    # バツ印
+    draw.line((10, 10, w-10, h-10), fill=(200, 80, 80), width=6)
+    draw.line((w-10, 10, 10, h-10), fill=(200, 80, 80), width=6)
+    draw.rectangle((0, 0, w-1, h-1), outline=(120, 120, 120), width=2)
+    return img
+
 def get_image_thumbnail(filepath, size=(240,240), cache=None):
     key = (filepath, size)
     if cache is not None:
@@ -118,7 +128,7 @@ def get_image_thumbnail(filepath, size=(240,240), cache=None):
             cache.set(key, img.copy())
         return img
     except Exception:
-        return None
+        return get_no_thumbnail_image(size)
 
 def get_video_thumbnail(filepath, size=(240,240), error_files=None, cache=None):
     key = (filepath, size)
@@ -133,7 +143,7 @@ def get_video_thumbnail(filepath, size=(240,240), error_files=None, cache=None):
         if not ret:
             if error_files is not None:
                 error_files.append(f"{filepath} : 動画フレーム取得失敗")
-            return None
+            return get_no_thumbnail_image(size)
         img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(img)
         pil_img.thumbnail(size, Image.LANCZOS)
@@ -143,7 +153,7 @@ def get_video_thumbnail(filepath, size=(240,240), error_files=None, cache=None):
     except Exception as e:
         if error_files is not None:
             error_files.append(f"{filepath} : {e}")
-        return None
+        return get_no_thumbnail_image(size)
 
 def get_thumbnail_for_file(filepath, size=(120, 90), error_files=None, cache=None):
     ext = os.path.splitext(filepath)[1].lower()

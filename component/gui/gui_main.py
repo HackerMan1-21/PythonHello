@@ -58,7 +58,7 @@ class DuplicateFinderGUI(QWidget):
         self.worker = None  # スレッド初期化
 
     def init_ui(self):
-        font_css = "font-size:20px;font-weight:bold;padding:8px 0 8px 0;color:#00ffe7;text-shadow:0 0 8px #00ffe7;font-family:'Meiryo UI','Consolas','Fira Mono',monospace;"
+        font_css = "font-size:20px;font-weight:bold;padding:8px 0 8px 0;color:#00ffe7;font-family:'Meiryo UI','Consolas','Fira Mono',monospace;"
         self.setStyleSheet('''
             QWidget {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0f2027, stop:0.5 #2c5364, stop:1 #232526);
@@ -69,7 +69,7 @@ class DuplicateFinderGUI(QWidget):
             }
             QLabel {
                 color: #00ffe7;
-                text-shadow: 0 0 6px #00ffe7, 0 0 2px #00ffe7;
+                /* text-shadow: 0 0 6px #00ffe7, 0 0 2px #00ffe7; */
                 font-family: "Meiryo UI", "Consolas", "Fira Mono", monospace;
             }
             QPushButton {
@@ -81,15 +81,15 @@ class DuplicateFinderGUI(QWidget):
                 font-size: 15px;
                 font-family: "Meiryo UI", "Consolas", "Fira Mono", monospace;
                 font-weight: bold;
-                text-shadow: 0 0 6px #00ffe7;
-                box-shadow: 0 0 12px #00ffe733;
-                transition: all 0.2s;
+                /* text-shadow: 0 0 6px #00ffe7; */
+                /* box-shadow: 0 0 12px #00ffe733; */
+                /* transition: all 0.2s; */
             }
             QPushButton:hover {
                 background: #00ffe7;
                 color: #232526;
                 border: 2px solid #00ffe7;
-                box-shadow: 0 0 24px #00ffe7;
+                /* box-shadow: 0 0 24px #00ffe7; */
             }
             QPushButton:pressed {
                 background: #232526;
@@ -108,7 +108,7 @@ class DuplicateFinderGUI(QWidget):
             QProgressBar::chunk {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00ffe7, stop:1 #00ff99);
                 border-radius: 8px;
-                box-shadow: 0 0 16px #00ffe7;
+                /* box-shadow: 0 0 16px #00ffe7; */
             }
             QScrollArea {
                 background: transparent;
@@ -149,10 +149,10 @@ class DuplicateFinderGUI(QWidget):
         self.progress.setValue(0)
         layout.addWidget(self.progress)
         self.progress_time_label = QLabel("")
-        self.progress_time_label.setStyleSheet("font-size:13px;color:#00ff99;padding:2px 0 8px 0;text-shadow:0 0 8px #00ff99;")
+        self.progress_time_label.setStyleSheet("font-size:13px;color:#00ff99;padding:2px 0 8px 0;")
         layout.addWidget(self.progress_time_label)
         self.eta_label = QLabel("")
-        self.eta_label.setStyleSheet("font-size:13px;color:#ffb300;padding:2px 0 8px 0;text-shadow:0 0 8px #ffb300;")
+        self.eta_label.setStyleSheet("font-size:13px;color:#ffb300;padding:2px 0 8px 0;")
         layout.addWidget(self.eta_label)
         # --- サムネイル/グループ表示用スクロールエリア ---
         self.scroll_area = QScrollArea()
@@ -274,14 +274,17 @@ class DuplicateFinderGUI(QWidget):
             self.content_layout.addWidget(QLabel("重複ファイルは見つかりませんでした"))
             return
         self.group_widgets = []
+        thumb_cache = ThumbnailCache(folder)
         for group in duplicates:
             group_box = create_duplicate_group_ui(
                 group,
                 get_thumbnail_for_file,
-                self.show_detail_dialog,
+                show_detail_dialog,
                 self.delete_single_file,
-                self.show_compare_dialog
+                show_compare_dialog,
+                thumb_cache=thumb_cache
             )
+            print("DEBUG: addWidget group_box", group_box)
             self.content_layout.addWidget(group_box)
             self.group_widgets.append(group_box)
         self.delete_btn.setEnabled(False)
@@ -295,28 +298,14 @@ class DuplicateFinderGUI(QWidget):
         if not folder or folder == "フォルダ未選択":
             show_warning_dialog(self, "警告", "先にフォルダを選択してください")
             return
-        self.process_folder(folder)
-
-    def delete_single_file(self, file_path):
-        # 個別削除
-        move_to_trash(file_path)
-        show_info_dialog(self, "削除", f"{os.path.basename(file_path)} をゴミ箱に移動しました")
-        self.reload_folder()
-
-    def reload_folder(self):
-        # 再読み込み処理
-        folder = self.folder_label.text()
-        if not folder or folder == "フォルダ未選択":
-            show_warning_dialog(self, "警告", "先にフォルダを選択してください")
-            return
-        self.process_folder(folder)
+        self.find_duplicates()
 
     def select_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "重複チェックしたいフォルダを選択")
         if not folder:
             return
         self.folder_label.setText(folder)
-        self.process_folder(folder)
+        self.find_duplicates()
 
     def process_folder(self, folder):
         # フォルダ内のファイル一覧を取得し、サムネイル表示・重複検出準備
@@ -332,10 +321,12 @@ class DuplicateFinderGUI(QWidget):
 
     def clear_content(self):
         # サムネイル/グループ表示エリアをクリア
+        print("DEBUG: clear_content called, count=", self.content_layout.count())
         while self.content_layout.count():
             item = self.content_layout.takeAt(0)
             widget = item.widget()
             if widget:
+                print("DEBUG: delete widget", widget)
                 widget.deleteLater()
 
     def toggle_select(self, widget, file_path, selected_paths=None, delete_btn=None):
@@ -356,6 +347,12 @@ class DuplicateFinderGUI(QWidget):
         # 選択ファイルの削除処理（UIユーティリティに移譲）
         delete_selected_dialog(self, self.selected_paths, self.reload_folder)
 
+    def delete_single_file(self, file_path):
+        # 個別削除
+        move_to_trash(file_path)
+        show_info_dialog(self, "削除", f"{os.path.basename(file_path)} をゴミ箱に移動しました")
+        self.reload_folder()
+
     def face_grouping_and_move(self):
         # 顔グループ化処理（グループUIユーティリティに移譲）
         folder = self.folder_label.text()
@@ -364,7 +361,15 @@ class DuplicateFinderGUI(QWidget):
             QMessageBox.warning(self, "警告", "先にフォルダを選択してください")
             return
         groups = get_face_groups(folder)
-        show_face_grouping_dialog(self, groups, lambda checkboxes, dlg: move_selected_files_to_folder(checkboxes, dlg) or self.reload_folder())
+        thumb_cache = ThumbnailCache(folder)
+        print("DEBUG: show_face_grouping_dialog call", groups, thumb_cache)
+        show_face_grouping_dialog(
+            self,
+            groups,
+            lambda checkboxes, dlg: move_selected_files_to_folder(checkboxes, dlg) or self.reload_folder(),
+            delete_cb=self.delete_single_file,
+            thumb_cache=thumb_cache
+        )
 
     def show_mp4_tool_dialog(self):
         # MP4修復/変換/デジタル修復ダイアログ
@@ -391,7 +396,16 @@ class DuplicateFinderGUI(QWidget):
             return
         video_exts = ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
         broken_groups = check_broken_videos(folder, video_exts)
-        show_broken_video_dialog(self, broken_groups, self.run_mp4_repair, self.run_mp4_convert, self.run_mp4_digital_repair)
+        thumb_cache = ThumbnailCache(folder)
+        print("DEBUG: show_broken_video_dialog call", broken_groups, thumb_cache)
+        show_broken_video_dialog(
+            self,
+            broken_groups,
+            self.run_mp4_repair,
+            self.run_mp4_convert,
+            self.run_mp4_digital_repair,
+            thumb_cache=thumb_cache
+        )
 
     def run_mp4_repair(self, file_path=None):
         if not file_path:
