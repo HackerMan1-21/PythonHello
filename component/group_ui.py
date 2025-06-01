@@ -270,3 +270,60 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
     vbox.addWidget(btns)
     dlg.setLayout(vbox)
     dlg.exec_()
+
+def create_error_group_ui(error_files, get_thumbnail_for_file, detail_cb, delete_cb, thumb_cache=None, defer_queue=None, thumb_widget_map=None):
+    group_box = QGroupBox("サムネイル生成エラー/壊れファイル")
+    grid = QGridLayout()
+    grid.setHorizontalSpacing(12)
+    grid.setVerticalSpacing(16)
+    max_col = 4
+    for idx, f in enumerate(error_files):
+        # サムネイル取得不可なのでNo Thumbnail表示
+        thumb_btn = QPushButton()
+        thumb_btn.setFixedSize(180, 180)
+        thumb_btn.setIconSize(QSize(180, 180))
+        thumb_btn.setText("No Thumbnail")
+        thumb_btn.setStyleSheet("background:transparent;border:2px solid #ff4444;color:#ff4444;font-size:15px;border-radius:10px;")
+        thumb_btn.clicked.connect(lambda _, path=f: detail_cb(path))
+        if thumb_widget_map is not None:
+            thumb_widget_map[f] = thumb_btn
+        fname = os.path.basename(f)
+        name_label = QLabel(fname)
+        name_label.setAlignment(Qt.AlignCenter)
+        name_label.setStyleSheet("font-size:12px;color:#ff4444;font-weight:bold;max-width:180px;")
+        name_label.setWordWrap(True)
+        path_label = QLabel(f)
+        path_label.setAlignment(Qt.AlignCenter)
+        path_label.setWordWrap(True)
+        path_label.setStyleSheet("font-size:10px;color:#ffb300;max-width:180px;")
+        path_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextBrowserInteraction)
+        def open_folder(event, path=f):
+            import os, subprocess, sys
+            folder = os.path.dirname(path)
+            if os.path.exists(folder):
+                try:
+                    os.startfile(folder)
+                except AttributeError:
+                    if sys.platform == "darwin":
+                        subprocess.Popen(["open", folder])
+                    else:
+                        subprocess.Popen(["xdg-open", folder])
+        path_label.mousePressEvent = open_folder
+        del_btn = QPushButton("削除")
+        del_btn.setStyleSheet("font-size:12px;color:#ff00c8;max-width:180px;")
+        del_btn.setFixedWidth(180)
+        del_btn.clicked.connect(lambda _, path=f: delete_cb(path))
+        vbox = QVBoxLayout()
+        vbox.setSpacing(2)
+        vbox.setContentsMargins(2, 2, 2, 2)
+        vbox.addWidget(thumb_btn)
+        vbox.addWidget(name_label)
+        vbox.addWidget(path_label)
+        vbox.addWidget(del_btn)
+        file_widget = QWidget()
+        file_widget.setLayout(vbox)
+        row = idx // max_col
+        col = idx % max_col
+        grid.addWidget(file_widget, row, col)
+    group_box.setLayout(grid)
+    return group_box

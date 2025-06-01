@@ -19,6 +19,7 @@ import numpy as np
 from PIL import Image
 import hashlib
 import pickle
+import concurrent.futures
 from component.utils.cache_util import save_cache, load_cache
 from component.utils.file_util import normalize_path
 
@@ -39,10 +40,7 @@ def get_image_phash(filepath, folder=None, cache=None):
         cache[filepath] = val
         return val
     val = get_features_with_cache(filepath, calc_func, folder)
-    if val is not None:
-        print(f"[pHash cache (get_features_with_cache)] {filepath} -> HIT")
-    else:
-        print(f"[pHash cache (get_features_with_cache)] {filepath} -> MISS")
+    # print(f"[pHash cache (get_features_with_cache)] {filepath} -> HIT" if val is not None else f"[pHash cache (get_features_with_cache)] {filepath} -> MISS")
     return val
 
 def get_video_phash(filepath, frame_count=7, folder=None, cache=None):
@@ -87,10 +85,7 @@ def get_video_phash(filepath, frame_count=7, folder=None, cache=None):
         cache[filepath] = val
         return val
     val = get_features_with_cache(filepath, calc_func, folder)
-    if val is not None:
-        print(f"[pHash cache (get_features_with_cache)] {filepath} -> HIT")
-    else:
-        print(f"[pHash cache (get_features_with_cache)] {filepath} -> MISS")
+    # print(f"[pHash cache (get_features_with_cache)] {filepath} -> HIT" if val is not None else f"[pHash cache (get_features_with_cache)] {filepath} -> MISS")
     return val
 
 def get_cache_files(folder):
@@ -184,6 +179,52 @@ def group_by_phash(file_hashes, threshold=8):
             groups.append(group)
     return groups
 
+def find_group_for_index(args):
+    i, (f1, h1), file_hashes, threshold = args
+    if h1 is None:
+        return None
+    group = [f1]
+    for j, (f2, h2) in enumerate(file_hashes):
+        if i != j and h2 is not None:
+            if isinstance(h1, list) and isinstance(h2, list):
+                minlen = min(len(h1), len(h2))
+                try:
+                    dist = sum(h1[k] - h2[k] if hasattr(h1[k], '__sub__') else abs(int(h1[k]) - int(h2[k])) for k in range(minlen))
+                    dist = abs(dist)
+                except Exception:
+                    continue
+                if dist < threshold * minlen:
+                    group.append(f2)
+            elif not isinstance(h1, list) and not isinstance(h2, list):
+                try:
+                    if hasattr(h1, '__sub__') and hasattr(h2, '__sub__'):
+                        diff = abs(h1 - h2)
+                    else:
+                        diff = abs(int(h1) - int(h2))
+                    if diff < threshold:
+                        group.append(f2)
+                except Exception:
+                    continue
+    if len(group) > 1:
+        return set(group)
+    return None
+
+def group_by_phash_parallel(file_hashes, threshold=12, max_workers=None):
+    args_list = [(i, fh, file_hashes, threshold) for i, fh in enumerate(file_hashes)]
+    group_candidates = []
+    with concurrent.futures.ProcessPoolExecutor(max_workers=12) as executor:
+        for res in executor.map(find_group_for_index, args_list, chunksize=128):
+            if res:
+                group_candidates.append(res)
+    final_groups = []
+    used = set()
+    for group in group_candidates:
+        group = group - used
+        if len(group) > 1:
+            final_groups.append(list(group))
+            used.update(group)
+    return final_groups
+
 def get_image_and_video_files(folder, image_exts=(".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff"), video_exts=(".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".mpg", ".mpeg", ".3gp")):
     files = []
     for root, dirs, fs in os.walk(folder):
@@ -193,7 +234,7 @@ def get_image_and_video_files(folder, image_exts=(".jpg", ".jpeg", ".png", ".bmp
                 files.append(os.path.join(root, f))
     return files
 
-def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None):
+def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None, parallel=True):
     image_exts = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff")
     video_exts = (".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".mpg", ".mpeg", ".3gp")
     files = get_image_and_video_files(folder, image_exts, video_exts)
@@ -210,5 +251,15 @@ def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None)
             progress_callback(idx+1, total)
         elif progress_bar is not None:
             progress_bar.setValue(int((idx+1)/total*100))
-    groups = group_by_phash(file_hashes)
+    # pHashがNoneのファイルを抽出
+    error_files = [f for f, h in file_hashes if h is None]
+    # グループ化
+    valid_file_hashes = [(f, h) for f, h in file_hashes if h is not None]
+    if parallel and len(valid_file_hashes) > 100:
+        groups = group_by_phash_parallel(valid_file_hashes)
+    else:
+        groups = group_by_phash(valid_file_hashes)
+    # エラー（未分類）ファイルを一番下に追加
+    if error_files:
+        groups.append(error_files)
     return groups, None

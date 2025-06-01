@@ -384,7 +384,8 @@ class DuplicateFinderGUI(QWidget):
         self.load_thumb_cache(folder)
         # --- 非同期で重複検出・サムネイル生成 ---
         def run_detection():
-            duplicates, progress_iter = find_duplicates_in_folder(folder, progress_callback=progress_callback)
+            # 並列グループ化を有効化
+            duplicates, progress_iter = find_duplicates_in_folder(folder, progress_callback=progress_callback, parallel=True)
             def update_ui():
                 self.clear_content()
                 if not duplicates:
@@ -396,19 +397,33 @@ class DuplicateFinderGUI(QWidget):
                 self.thumb_cache = ThumbnailCache(folder)
                 self.stacked.setCurrentIndex(0)
                 print("DEBUG: stacked.setCurrentIndex(0) called")
-                for group in duplicates:
-                    group_box = create_duplicate_group_ui(
-                        group,
-                        get_thumbnail_for_file,
-                        show_detail_dialog,
-                        self.delete_single_file,
-                        show_compare_dialog,
-                        thumb_cache=self.thumb_cache,
-                        defer_queue=self.thumb_queue,
-                        thumb_widget_map=self.thumb_widget_map
-                    )
-                    print("DEBUG: group_box created", group_box)
-                    group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #00ffe7; border-radius: 12px; padding: 8px;")
+                for i, group in enumerate(duplicates):
+                    # 最後のグループかつエラーグループの場合はエラーUIで描画
+                    if i == len(duplicates) - 1 and all(os.path.isfile(f) for f in group) and any(os.path.splitext(f)[1].lower() not in ['.jpg','.jpeg','.png','.bmp','.gif','.tiff','.mp4','.avi','.mov','.mkv','.wmv','.flv','.webm','.mpg','.mpeg','.3gp'] or not os.path.exists(f) for f in group):
+                        # ただし、エラーグループはpHashがNoneのファイル群なので、サムネイル生成不可
+                        from component.group_ui import create_error_group_ui
+                        group_box = create_error_group_ui(
+                            group,
+                            get_thumbnail_for_file,
+                            show_detail_dialog,
+                            self.delete_single_file,
+                            thumb_cache=self.thumb_cache,
+                            defer_queue=self.thumb_queue,
+                            thumb_widget_map=self.thumb_widget_map
+                        )
+                        group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #ff4444; border-radius: 12px; padding: 8px;")
+                    else:
+                        group_box = create_duplicate_group_ui(
+                            group,
+                            get_thumbnail_for_file,
+                            show_detail_dialog,
+                            self.delete_single_file,
+                            show_compare_dialog,
+                            thumb_cache=self.thumb_cache,
+                            defer_queue=self.thumb_queue,
+                            thumb_widget_map=self.thumb_widget_map
+                        )
+                        group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #00ffe7; border-radius: 12px; padding: 8px;")
                     self.content_layout.addWidget(group_box)
                     self.group_widgets.append(group_box)
                 self.delete_btn.setEnabled(False)
