@@ -384,7 +384,7 @@ class DuplicateFinderGUI(QWidget):
         self.load_thumb_cache(folder)
         # --- 非同期で重複検出・サムネイル生成 ---
         def run_detection():
-            duplicates, progress_iter = find_duplicates_in_folder(folder, self.progress)
+            duplicates, progress_iter = find_duplicates_in_folder(folder, progress_callback=progress_callback)
             def update_ui():
                 self.clear_content()
                 if not duplicates:
@@ -413,11 +413,16 @@ class DuplicateFinderGUI(QWidget):
                     self.group_widgets.append(group_box)
                 self.delete_btn.setEnabled(False)
                 elapsed = time.time() - start_time
-                update_progress(self.progress, 100, self.progress_time_label, self.eta_label, elapsed)
+                update_progress(self.progress, 100, self.progress_time_label, self.eta_label, elapsed, 0)
                 self.save_thumb_cache(folder)
                 self.cancel_btn.setEnabled(False)
                 print("DEBUG: find_duplicates end")
-            QApplication.instance().invokeMethod(self, update_ui)
+            QTimer.singleShot(0, update_ui)
+        # 進捗更新用のラッパー
+        def progress_callback(value, total):
+            elapsed = time.time() - start_time
+            eta = (elapsed / value * (total - value)) if value > 0 else None
+            update_progress(self.progress, int(value / total * 100), self.progress_time_label, self.eta_label, elapsed, eta)
         threading.Thread(target=run_detection, daemon=True).start()
 
     def reload_folder(self):

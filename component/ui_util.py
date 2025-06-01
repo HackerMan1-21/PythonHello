@@ -102,12 +102,25 @@ def show_warning_dialog(parent, title, message):
 def show_question_dialog(parent, title, message):
     return QMessageBox.question(parent, title, message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
 
-def update_progress(progress_bar, value, progress_time_label=None, eta_label=None, elapsed=None):
+def update_progress(progress_bar, value, progress_time_label=None, eta_label=None, elapsed=None, eta=None):
     progress_bar.setValue(value)
+    # 色を進捗率で変化
+    if value < 33:
+        color = '#ff4444'
+    elif value < 66:
+        color = '#ffb300'
+    else:
+        color = '#00ffe7'
+    progress_bar.setStyleSheet(f"QProgressBar::chunk {{background: {color}; border-radius: 8px;}} QProgressBar {{background: #232526; border: 2px solid #00ffe7; border-radius: 8px; text-align: center; color: #00ffe7; font-size: 14px; font-family: 'Meiryo UI', 'Consolas', 'Fira Mono', monospace;}}");
+    # 経過秒数表示
     if progress_time_label is not None and elapsed is not None:
-        progress_time_label.setText(f"経過: {elapsed:.1f}秒")
-    if eta_label is not None and elapsed is not None:
-        eta_label.setText(f"完了: {elapsed:.1f}秒")
+        progress_time_label.setText(f"経過: {elapsed:.1f} 秒")
+    # 予測残り時間表示
+    if eta_label is not None:
+        if eta is not None:
+            eta_label.setText(f"予測残り: {eta:.1f} 秒")
+        else:
+            eta_label.setText("")
 
 def drag_enter_event(event):
     if event.mimeData().hasUrls():

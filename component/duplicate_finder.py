@@ -177,7 +177,7 @@ def get_image_and_video_files(folder, image_exts=(".jpg", ".jpeg", ".png", ".bmp
                 files.append(os.path.join(root, f))
     return files
 
-def find_duplicates_in_folder(folder, progress_bar=None):
+def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None):
     image_exts = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff")
     video_exts = (".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".mpg", ".mpeg", ".3gp")
     files = get_image_and_video_files(folder, image_exts, video_exts)
@@ -190,7 +190,9 @@ def find_duplicates_in_folder(folder, progress_bar=None):
         else:
             h = get_video_phash(f, 7, folder)
         file_hashes.append((f, h))
-        if progress_bar is not None:
+        if progress_callback is not None:
+            progress_callback(idx+1, total)
+        elif progress_bar is not None:
             progress_bar.setValue(int((idx+1)/total*100))
     groups = group_by_phash(file_hashes)
     return groups, None
