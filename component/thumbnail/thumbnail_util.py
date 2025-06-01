@@ -6,6 +6,7 @@ import pickle
 from PIL import Image, ImageDraw
 import cv2
 from PyQt5.QtGui import QPixmap, QImage
+from PyQt5.QtCore import QThread, QCoreApplication
 import time
 
 # サムネイルキャッシュファイル名生成
@@ -95,8 +96,12 @@ class ThumbnailCache:
             if v is not None:
                 self.total_bytes -= self._estimate_size(v)
 
-# PIL.Image → QPixmap 変換
+# PIL.Image → QPixmap 変換（必ずメインスレッドでのみ呼ぶこと！）
 def pil_image_to_qpixmap(img):
+    # GUIスレッド以外から呼ばれた場合は例外を投げる
+    app = QCoreApplication.instance()
+    if app is not None and QThread.currentThread() != app.thread():
+        raise RuntimeError("pil_image_to_qpixmapは必ずGUIスレッドで呼んでください")
     if img is None:
         return None
     if img.mode != "RGB":
@@ -105,11 +110,11 @@ def pil_image_to_qpixmap(img):
     qimg = QImage(data, img.width, img.height, QImage.Format_RGB888)
     return QPixmap.fromImage(qimg)
 
+# サムネイル生成（PIL.Imageのみ返す。Qtオブジェクトは絶対返さない）
 def get_no_thumbnail_image(size=(180, 180)):
     img = Image.new("RGB", size, (60, 60, 60))
     draw = ImageDraw.Draw(img)
     w, h = size
-    # バツ印
     draw.line((10, 10, w-10, h-10), fill=(200, 80, 80), width=6)
     draw.line((w-10, 10, 10, h-10), fill=(200, 80, 80), width=6)
     draw.rectangle((0, 0, w-1, h-1), outline=(180, 180, 180), width=2)
@@ -121,7 +126,6 @@ def get_image_thumbnail(filepath, size=(180,180), cache=None, defer_queue=None, 
         thumb = cache.get(key)
         if thumb is not None:
             return thumb
-    # defer_queueが指定されていれば、生成リクエストを積んで仮サムネを返す
     if defer_queue is not None:
         defer_queue.put((filepath, size, is_video, error_files))
         return get_no_thumbnail_image(size)
@@ -176,6 +180,7 @@ def get_thumbnail_for_file(filepath, size=(180, 90), error_files=None, cache=Non
     else:
         return get_image_thumbnail(filepath, size, cache, defer_queue, is_video=False, error_files=error_files)
 
+# サムネイル生成ワーカー（PIL.Imageのみ扱う。Qtオブジェクトは絶対扱わない）
 class ThumbnailWorker(threading.Thread):
     def __init__(self, q, update_cb, cache=None):
         super().__init__(daemon=True)
@@ -189,10 +194,11 @@ class ThumbnailWorker(threading.Thread):
                 break
             path, size, is_video, error_files = item
             if is_video:
-                get_video_thumbnail(path, size, error_files, self.cache)
+                pil_img = get_video_thumbnail(path, size, error_files, self.cache)
             else:
-                get_image_thumbnail(path, size, self.cache)
-            self.update_cb(path)
+                pil_img = get_image_thumbnail(path, size, self.cache)
+            # コールバックは(path, pil_img)で必ず呼ぶ（Qtオブジェクトは渡さない）
+            self.update_cb(path, pil_img)
             self.q.task_done()
 
 def start_thumbnail_workers(q, update_cb, cache=None, num_workers=4):
@@ -223,4 +229,18 @@ def save_thumb_cache(cache):
     """
     サムネイルキャッシュを保存する。
     """
+    cache.save()
+
+def clear_thumbnail_cache(cache_or_folder=None):
+    """
+    サムネイルキャッシュをクリアし、ファイルにも反映する。
+    cache_or_folder: ThumbnailCacheインスタンス または フォルダパス/None
+    """
+    if cache_or_folder is None:
+        cache = ThumbnailCache(None)
+    elif isinstance(cache_or_folder, ThumbnailCache):
+        cache = cache_or_folder
+    else:
+        cache = ThumbnailCache(cache_or_folder)
+    cache.clear()
     cache.save()

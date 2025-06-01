@@ -22,6 +22,7 @@ from PIL import Image, ImageDraw
 import os
 import shutil
 from component.thumbnail.thumbnail_util import get_thumbnail_for_file, pil_image_to_qpixmap
+from PyQt5.QtCore import QTimer
 
 def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_cb, compare_cb, thumb_cache=None, defer_queue=None, thumb_widget_map=None):
     group_box = QGroupBox("重複グループ")
@@ -30,11 +31,14 @@ def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_c
     grid.setVerticalSpacing(16)
     max_col = 4
     for idx, f in enumerate(group):
-        pil_thumb = get_thumbnail_for_file(f, (180, 180), cache=thumb_cache, defer_queue=defer_queue)
         thumb_btn = QPushButton()
         thumb_btn.setFixedSize(180, 180)
-        thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
-        thumb_btn.setIconSize(QSize(180, 180))
+        def set_icon(btn=thumb_btn, path=f):
+            pil_thumb = get_thumbnail_for_file(path, (180, 180), cache=thumb_cache, defer_queue=defer_queue)
+            from component.thumbnail.thumbnail_util import pil_image_to_qpixmap
+            btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
+            btn.setIconSize(QSize(180, 180))
+        QTimer.singleShot(0, set_icon)
         thumb_btn.setStyleSheet("background:transparent;border:2px solid #00ffe7;border-radius:10px;")
         thumb_btn.clicked.connect(lambda _, path=f: detail_cb(path))
         if thumb_widget_map is not None:
@@ -96,11 +100,14 @@ def show_face_grouping_dialog(parent, groups, move_selected_files_to_folder_func
         group_box = QGroupBox("顔グループ")
         grid = QGridLayout()
         for idx, f in enumerate(group):
-            pil_thumb = get_thumbnail_for_file(f, (180, 180), cache=thumb_cache, defer_queue=defer_queue)
             thumb_btn = QPushButton()
             thumb_btn.setFixedSize(180, 180)
-            thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
-            thumb_btn.setIconSize(QSize(180, 180))
+            def set_icon(btn=thumb_btn, path=f):
+                pil_thumb = get_thumbnail_for_file(path, (180, 180), cache=thumb_cache, defer_queue=defer_queue)
+                from component.thumbnail.thumbnail_util import pil_image_to_qpixmap
+                btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
+                btn.setIconSize(QSize(180, 180))
+            QTimer.singleShot(0, set_icon)
             thumb_btn.setStyleSheet("background:transparent;border:2px solid #00ff99;border-radius:10px;")
             fname = os.path.basename(f)
             maxlen = 18
@@ -198,11 +205,14 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
         group_box = QGroupBox("壊れ動画グループ")
         grid = QGridLayout()
         for idx, f in enumerate(group):
-            pil_thumb = get_thumbnail_for_file(f, (180, 180), cache=thumb_cache, defer_queue=defer_queue)
             thumb_btn = QPushButton()
             thumb_btn.setFixedSize(180, 180)
-            thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
-            thumb_btn.setIconSize(QSize(180, 180))
+            def set_icon(btn=thumb_btn, path=f):
+                pil_thumb = get_thumbnail_for_file(path, (180, 180), cache=thumb_cache, defer_queue=defer_queue)
+                from component.thumbnail.thumbnail_util import pil_image_to_qpixmap
+                btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
+                btn.setIconSize(QSize(180, 180))
+            QTimer.singleShot(0, set_icon)
             thumb_btn.setStyleSheet("background:transparent;border:2px solid #ff4444;border-radius:10px;")
             fname = os.path.basename(f)
             maxlen = 18

@@ -49,41 +49,53 @@ from component.ui_util import show_detail_dialog, show_compare_dialog, add_thumb
 from component.group_ui import create_duplicate_group_ui, show_face_grouping_dialog, move_selected_files_to_folder, show_broken_video_dialog
 from component.thumbnail.thumbnail_util import ThumbnailCache
 
+from .gui_thumbnail import ThumbnailListModel
+from .gui_dialogs import show_progress_dialog
+from .gui_utils import ThumbnailDelegate
+
+from component.thumbnail.thumbnail_util import pil_image_to_qpixmap
+
 print("DEBUG: gui_main.py loaded from", __file__)
 
 # --- ここにDuplicateFinderGUIクラス本体を移植 ---
 
-class ThumbnailListModel(QAbstractListModel):
-    thumb_updated = pyqtSignal(str)
-    def __init__(self, file_list, thumb_cache, defer_queue, parent=None):
-        super().__init__(parent)
-        self.file_list = file_list
-        self.thumb_cache = thumb_cache
-        self.defer_queue = defer_queue
-        self.thumb_updated.connect(self.on_thumb_updated)
-    def rowCount(self, parent=QModelIndex()):
-        return len(self.file_list)
-    def data(self, index, role=Qt.DisplayRole):
-        if not index.isValid() or not (0 <= index.row() < len(self.file_list)):
-            return QVariant()
-        path = self.file_list[index.row()]
-        if role == Qt.DecorationRole:
-            from component.thumbnail.thumbnail_util import get_thumbnail_for_file, pil_image_to_qpixmap
-            pil_thumb = get_thumbnail_for_file(path, (180, 180), cache=self.thumb_cache, defer_queue=self.defer_queue)
-            return QIcon(pil_image_to_qpixmap(pil_thumb))
-        if role == Qt.DisplayRole:
-            return os.path.basename(path)
-        return QVariant()
-    def on_thumb_updated(self, path):
-        if path in self.file_list:
-            row = self.file_list.index(path)
-            self.dataChanged.emit(self.index(row), self.index(row))
-
-class ThumbnailDelegate(QStyledItemDelegate):
-    def paint(self, painter, option, index):
-        super().paint(painter, option, index)
-    def sizeHint(self, option, index):
-        return QSize(200, 200)
+def show_progress_dialog(parent, title, label, worker_func, min_val=0, max_val=100):
+    """
+    共通の進捗ダイアログ表示関数。
+    worker_func: バックグラウンドで実行する関数（引数: progress_callback）
+    progress_callback: (value, total) を受け取るコールバック
+    """
+    dlg = QProgressDialog(label, "キャンセル", min_val, max_val, parent)
+    dlg.setWindowTitle(title)
+    dlg.setWindowModality(Qt.WindowModal)
+    dlg.setStyleSheet('''
+        QProgressDialog {
+            background: #232526;
+            border: 2px solid #00ffe7;
+            border-radius: 10px;
+            font-size: 16px;
+            color: #00ffe7;
+        }
+        QProgressDialog::bar {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00ffe7, stop:1 #00ff99);
+            border-radius: 8px;
+        }
+    ''')
+    dlg.setValue(min_val)
+    cancelled = threading.Event()
+    def progress_callback(value, total):
+        if total > 0:
+            dlg.setValue(int(value / total * 100))
+        else:
+            dlg.setValue(0)
+        QApplication.processEvents()
+    def run_worker():
+        worker_func(progress_callback, cancelled)
+        QTimer.singleShot(0, dlg.close)
+    dlg.canceled.connect(cancelled.set)
+    QTimer.singleShot(0, dlg.show)
+    threading.Thread(target=run_worker, daemon=True).start()
+    dlg.exec_()
 
 class DuplicateFinderGUI(QWidget):
     def __init__(self, parent=None):
@@ -95,22 +107,31 @@ class DuplicateFinderGUI(QWidget):
         self.worker = None  # スレッド初期化
         self.thumb_widget_map = {}  # ファイルパス→サムネイルボタン
         self.cancel_requested = False
-        # --- 状態管理 ---
         self.selected_paths = set()
-        self.auto_reload_timer = QTimer(self)
-        self.auto_reload_timer.setInterval(3000)  # 3秒ごとに監視
-        self.auto_reload_timer.timeout.connect(self.check_folder_update)
         self.last_folder_state = None
         self.current_view_mode = 0  # 0:グリッド, 1:仮想化
+        # auto_reload_timerの初期化はここだけ
+        self.auto_reload_timer = QTimer(self)
+        self.auto_reload_timer.setInterval(3000)
+        self.auto_reload_timer.timeout.connect(self.check_folder_update)
 
-    def on_thumb_update(self, path):
+    def on_thumb_update(self, path, pil_image):
         # サムネイル生成完了時のコールバック
-        btn = self.thumb_widget_map.get(path)
-        if btn is not None:
-            from component.thumbnail.thumbnail_util import get_thumbnail_for_file, pil_image_to_qpixmap
-            pil_thumb = get_thumbnail_for_file(path, (180, 180), cache=self.thumb_cache)
-            btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
-            btn.setIconSize(QSize(180, 180))
+        from PyQt5.QtCore import QTimer
+        def update_ui():
+            btn = self.thumb_widget_map.get(path)
+            if btn is not None and pil_image is not None:
+                # 既に削除されたウィジェットや非表示ウィジェットにはsetIconしない
+                if not btn.isVisible():
+                    return
+                try:
+                    from component.thumbnail.thumbnail_util import pil_image_to_qpixmap
+                    btn.setIcon(QIcon(pil_image_to_qpixmap(pil_image)))
+                    btn.setIconSize(QSize(180, 180))
+                except RuntimeError:
+                    # QWidgetが既に削除済みの場合は無視
+                    pass
+        QTimer.singleShot(0, update_ui)
         # else: pass  # サムネイルボタンが見つからない場合は何もしない
 
     def init_ui(self):
@@ -174,16 +195,16 @@ class DuplicateFinderGUI(QWidget):
         btn_hbox.addWidget(self.dup_check_btn)
         self.face_group_btn = QPushButton("顔でグループ化して振り分け")
         self.face_group_btn.setStyleSheet("font-size:16px;color:#00ff99;border:2px solid #00ff99;border-radius:8px;padding:8px;")
-        self.face_group_btn.clicked.connect(self.face_grouping_and_move)
+        self.face_group_btn.clicked.connect(lambda: self.face_grouping_and_move())
         btn_hbox.addWidget(self.face_group_btn)
         self.mp4_tool_btn = QPushButton("MP4修復/変換")
         self.mp4_tool_btn.setStyleSheet("font-size:16px;color:#ffb300;border:2px solid #ffb300;border-radius:8px;padding:8px;")
-        self.mp4_tool_btn.clicked.connect(self.show_mp4_tool_dialog)
+        self.mp4_tool_btn.clicked.connect(lambda: self.show_mp4_tool_dialog())
         btn_hbox.addWidget(self.mp4_tool_btn)
         # --- サムネイルキャッシュ削除ボタン ---
         self.clear_thumb_cache_btn = QPushButton("サムネイルキャッシュ削除")
         self.clear_thumb_cache_btn.setStyleSheet("font-size:14px;color:#fff;background:#444;border:1px solid #00ffe7;border-radius:6px;padding:4px 8px;")
-        self.clear_thumb_cache_btn.clicked.connect(self.clear_thumb_cache)
+        self.clear_thumb_cache_btn.clicked.connect(lambda: self.clear_thumb_cache())
         btn_hbox.addWidget(self.clear_thumb_cache_btn)
         layout.addLayout(btn_hbox)
         # --- フォルダラベル・選択ボタン ---
@@ -218,6 +239,7 @@ class DuplicateFinderGUI(QWidget):
         self.list_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.list_view.setSpacing(8)
         self.list_view.setItemDelegate(ThumbnailDelegate())
+        self.list_view.setIconSize(QSize(180, 180))  # ← 追加
         # --- スタックウィジェットでUI切替 ---
         self.stacked = QStackedWidget()
         self.stacked.addWidget(self.scroll_area)  # 0: グリッドUI
@@ -248,10 +270,6 @@ class DuplicateFinderGUI(QWidget):
         self.setLayout(layout)
         self.current_view_mode = 0  # 0:グリッド, 1:仮想化
         self.selected_paths = set()
-        self.auto_reload_timer = QTimer(self)
-        self.auto_reload_timer.setInterval(3000)
-        self.auto_reload_timer.timeout.connect(self.check_folder_update)
-        self.last_folder_state = None
         # --- 初期表示で重複チェックを呼ばない（フォルダ選択後のみ呼ぶ） ---
 
     def selectFiles(self):
@@ -382,10 +400,9 @@ class DuplicateFinderGUI(QWidget):
         update_progress(self.progress, 0, self.progress_time_label, self.eta_label, 0)
         start_time = time.time()
         self.load_thumb_cache(folder)
-        # --- 非同期で重複検出・サムネイル生成 ---
-        def run_detection():
+        def worker(progress_callback, cancelled):
             # 並列グループ化を有効化
-            duplicates, progress_iter = find_duplicates_in_folder(folder, progress_callback=progress_callback, parallel=True)
+            duplicates, _ = find_duplicates_in_folder(folder, progress_callback=progress_callback, parallel=True)
             def update_ui():
                 self.clear_content()
                 if not duplicates:
@@ -398,9 +415,10 @@ class DuplicateFinderGUI(QWidget):
                 self.stacked.setCurrentIndex(0)
                 print("DEBUG: stacked.setCurrentIndex(0) called")
                 for i, group in enumerate(duplicates):
-                    # 最後のグループかつエラーグループの場合はエラーUIで描画
-                    if i == len(duplicates) - 1 and all(os.path.isfile(f) for f in group) and any(os.path.splitext(f)[1].lower() not in ['.jpg','.jpeg','.png','.bmp','.gif','.tiff','.mp4','.avi','.mov','.mkv','.wmv','.flv','.webm','.mpg','.mpeg','.3gp'] or not os.path.exists(f) for f in group):
-                        # ただし、エラーグループはpHashがNoneのファイル群なので、サムネイル生成不可
+                    # 最後のグループかつエラーグループ（pHash失敗ファイル群）はエラーUIで描画
+                    if i == len(duplicates) - 1 and all(
+                        not isinstance(duplicates[0], list) or (isinstance(group, list) and all(get_thumbnail_for_file(f, (180, 180), cache=self.thumb_cache) is None for f in group))
+                    ):
                         from component.group_ui import create_error_group_ui
                         group_box = create_error_group_ui(
                             group,
@@ -433,165 +451,84 @@ class DuplicateFinderGUI(QWidget):
                 self.cancel_btn.setEnabled(False)
                 print("DEBUG: find_duplicates end")
             QTimer.singleShot(0, update_ui)
-        # 進捗更新用のラッパー
-        def progress_callback(value, total):
-            elapsed = time.time() - start_time
-            eta = (elapsed / value * (total - value)) if value > 0 else None
-            update_progress(self.progress, int(value / total * 100), self.progress_time_label, self.eta_label, elapsed, eta)
-        threading.Thread(target=run_detection, daemon=True).start()
+        show_progress_dialog(self, "進捗", "重複検出中...", worker)
+        self.cancel_btn.setEnabled(True)
 
-    def reload_folder(self):
-        # 再読み込み処理
+    def clear_thumb_cache(self):
         folder = self.folder_label.text()
         if not folder or folder == "フォルダ未選択":
             show_warning_dialog(self, "警告", "先にフォルダを選択してください")
             return
-        self.find_duplicates()
+        reply = QMessageBox.question(self, "Confirm", "サムネイルキャッシュを削除しますか？", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            thumb_cache_dir = os.path.join(folder, ".thumb_cache")
+            if os.path.exists(thumb_cache_dir):
+                shutil.rmtree(thumb_cache_dir)
+                show_info_dialog(self, "完了", "サムネイルキャッシュを削除しました")
+            else:
+                show_warning_dialog(self, "警告", "サムネイルキャッシュが見つかりません")
+            self.clear_content()
+            self.load_thumb_cache(folder)
+            def worker(progress_callback, cancelled):
+                # キャッシュ削除自体は上で終わっているので、ダミー進捗
+                for i in range(101):
+                    if cancelled.is_set():
+                        break
+                    progress_callback(i, 100)
+                    time.sleep(0.005)
+            show_progress_dialog(self, "進捗", "サムネイルキャッシュ削除中...", worker)
 
-    def select_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "重複チェックしたいフォルダを選択")
-        if not folder:
-            return
-        self.folder_label.setText(folder)
-        self.find_duplicates()
-
-    def clear_content(self):
-        # サムネイル/グループ表示エリアをクリア
-        print("DEBUG: clear_content called, count=", self.content_layout.count())
-        while self.content_layout.count():
-            item = self.content_layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                print("DEBUG: delete widget", widget)
-                widget.deleteLater()
-
-    def toggle_select(self, widget, file_path, selected_paths=None, delete_btn=None):
-        # 選択状態の切り替え
-        if selected_paths is None:
-            selected_paths = self.selected_paths
-        if delete_btn is None:
-            delete_btn = self.delete_btn
-        if file_path in selected_paths:
-            selected_paths.remove(file_path)
-            widget.setStyleSheet("background:rgba(0,0,0,0.3);border-radius:8px;margin:4px 0;padding:4px 8px;")
-        else:
-            selected_paths.add(file_path)
-            widget.setStyleSheet("background:rgba(0,255,231,0.25);border:2px solid #00ffe7;border-radius:8px;margin:4px 0;padding:4px 8px;")
-        delete_btn.setEnabled(len(selected_paths) > 0)
-
-    def delete_selected(self):
-        # 選択ファイルの削除処理（UIユーティリティに移譲）
-        delete_selected_dialog(self, self.selected_paths, self.reload_folder)
-
-    def delete_single_file(self, file_path):
-        # 個別削除
-        move_to_trash(file_path)
-        show_info_dialog(self, "削除", f"{os.path.basename(file_path)} をゴミ箱に移動しました")
-        self.reload_folder()
-
-    def face_grouping_and_move(self):
-        # 顔グループ化処理（グループUIユーティリティに移譲）
+    def reload_folder(self):
         folder = self.folder_label.text()
         if not folder or folder == "フォルダ未選択":
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "警告", "先にフォルダを選択してください")
             return
-        groups = get_face_groups(folder)
-        self.thumb_cache = ThumbnailCache(folder)
-        print("DEBUG: show_face_grouping_dialog call", groups, self.thumb_cache)
-        show_face_grouping_dialog(
-            self,
-            groups,
-            lambda checkboxes, dlg: move_selected_files_to_folder(checkboxes, dlg) or self.reload_folder(),
-            delete_cb=self.delete_single_file,
-            thumb_cache=self.thumb_cache,
-            defer_queue=self.thumb_queue
-        )
-
-    def show_mp4_tool_dialog(self):
-        # MP4修復/変換/デジタル修復ダイアログ
-        folder = self.folder_label.text()
-        if not folder or folder == "フォルダ未選択":
-            QMessageBox.warning(self, "警告", "先にフォルダを選択してください")
-            return
-        show_mp4_tool_dialog(self, folder)
+        self.clear_content()
+        self.load_thumb_cache(folder)
+        def worker(progress_callback, cancelled):
+            from component.thumbnail.thumbnail_util import get_no_thumbnail_image
+            no_thumb = get_no_thumbnail_image((180, 180))
+            for idx, file_path in enumerate(list(self.thumb_widget_map.keys())):
+                if cancelled.is_set():
+                    break
+                if file_path not in self.thumb_cache:
+                    btn = self.thumb_widget_map[file_path]
+                    QTimer.singleShot(0, lambda b=btn, nt=no_thumb: b.setIcon(QIcon(pil_image_to_qpixmap(nt))))
+                progress_callback(idx + 1, len(self.thumb_widget_map))
+                time.sleep(0.002)
+        show_progress_dialog(self, "進捗", "フォルダ再読み込み中...", worker)
 
     def check_folder_update(self):
-        # フォルダの更新監視（自動リロード）
+        # フォルダ内のファイル変更監視・再読み込み
         folder = self.folder_label.text()
         if not folder or folder == "フォルダ未選択":
             return
-        state = get_folder_state(folder)
-        if self.last_folder_state is not None and state != self.last_folder_state:
-            self.reload_folder()
-        self.last_folder_state = state
-
-    def show_broken_video_dialog(self):
-        # 壊れ動画検出・修復ダイアログ
-        folder = QFileDialog.getExistingDirectory(self, "壊れ検出したいフォルダを選択")
-        if not folder:
-            return
-        video_exts = ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
-        broken_groups = check_broken_videos(folder, video_exts)
-        self.thumb_cache = ThumbnailCache(folder)
-        print("DEBUG: show_broken_video_dialog call", broken_groups, self.thumb_cache)
-        show_broken_video_dialog(
-            self,
-            broken_groups,
-            self.run_mp4_repair,
-            self.run_mp4_convert,
-            self.run_mp4_digital_repair,
-            thumb_cache=self.thumb_cache,
-            defer_queue=self.thumb_queue
-        )
-
-    def run_mp4_repair(self, file_path=None):
-        if not file_path:
-            return
-        save_path, _ = get_save_file_path(self, "修復後の保存先を指定", os.path.splitext(file_path)[0] + "_repaired" + os.path.splitext(file_path)[1], "動画ファイル (*.*)")
-        if not save_path:
-            return
         try:
-            repair_mp4(file_path, save_path)
-            show_info_dialog(self, "修復完了", f"{os.path.basename(file_path)} の修復が完了しました")
+            current_state = get_folder_state(folder)
+            if self.last_folder_state is not None and current_state != self.last_folder_state:
+                print("DEBUG: Folder state changed, reloading...")
+                self.reload_folder()
+            self.last_folder_state = current_state
         except Exception as e:
-            show_warning_dialog(self, "修復失敗", str(e))
+            print("ERROR:", e)
 
-    def run_mp4_convert(self, file_path=None):
-        if not file_path:
-            return
-        save_path, _ = get_save_file_path(self, "変換後の保存先を指定", os.path.splitext(file_path)[0] + "_converted" + os.path.splitext(file_path)[1], "動画ファイル (*.*)")
-        if not save_path:
-            return
-        try:
-            convert_mp4(file_path, save_path)
-            show_info_dialog(self, "変換完了", f"{os.path.basename(file_path)} の変換が完了しました")
-        except Exception as e:
-            show_warning_dialog(self, "変換失敗", str(e))
+    def select_folder(self):
+        # フォルダ選択ダイアログを表示し、選択された場合のみ処理
+        folder = QFileDialog.getExistingDirectory(self, "フォルダ選択")
+        if folder:
+            if self.folder_label.text() == folder:
+                # すでに同じフォルダが選択されている場合は何もしない
+                return
+            self.folder_label.setText(folder)
+            self.find_duplicates()
 
-    def run_mp4_digital_repair(self, file_path=None):
-        if not file_path:
+    def delete_selected(self):
+        """
+        選択されたファイルを削除またはゴミ箱に移動する処理。
+        UIユーティリティの delete_selected_dialog を利用し、選択パスをクリア・UI更新も行う。
+        """
+        if not self.selected_paths:
+            show_warning_dialog(self, "警告", "削除するファイルが選択されていません")
             return
-        save_path, _ = get_save_file_path(self, "高画質化後の保存先を指定", os.path.splitext(file_path)[0] + "_aiup_gfpgan" + os.path.splitext(file_path)[1], "動画ファイル (*.*)")
-        if not save_path:
-            return
-        try:
-            digital_repair(file_path, save_path)
-            show_info_dialog(self, "AI超解像完了", f"{os.path.basename(file_path)} のAI超解像が完了しました")
-        except Exception as e:
-            show_warning_dialog(self, "AI超解像失敗", str(e))
-
-    def clear_thumb_cache(self):
-        # サムネイルキャッシュ削除処理
-        folder = self.folder_label.text()
-        if not folder or folder == "フォルダ未選択":
-            QMessageBox.information(self, "キャッシュ削除", "先にフォルダを選択してください")
-            return
-        cache = ThumbnailCache(folder)
-        cache.clear()
-        try:
-            import os
-            os.remove(cache.cache_file)
-        except Exception:
-            pass
-        QMessageBox.information(self, "キャッシュ削除", "サムネイルキャッシュを削除しました")
+        delete_selected_dialog(self, list(self.selected_paths), self.thumb_widget_map, self.clear_content)
+        self.selected_paths.clear()
+        self.delete_btn.setEnabled(False)
