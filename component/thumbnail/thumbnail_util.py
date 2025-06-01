@@ -18,7 +18,7 @@ def get_thumb_cache_file(folder):
     return f".thumb_cache_{h}.pkl"
 
 class ThumbnailCache:
-    def __init__(self, folder=None, max_items=1000, max_bytes=50*1024*1024):
+    def __init__(self, folder=None, max_items=25000, max_bytes=3*1024*1024*1024):
         self.folder = folder
         self.cache_file = get_thumb_cache_file(folder)
         self.cache = {}  # key: (filepath, size), value: PIL.Image

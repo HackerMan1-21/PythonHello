@@ -32,11 +32,18 @@ def get_image_phash(filepath, folder=None, cache=None):
             return None
     if cache is not None:
         if filepath in cache:
+            print(f"[pHash cache HIT] {filepath}")
             return cache[filepath]
         val = calc_func(filepath)
+        print(f"[pHash cache MISS] {filepath}")
         cache[filepath] = val
         return val
-    return get_features_with_cache(filepath, calc_func, folder)
+    val = get_features_with_cache(filepath, calc_func, folder)
+    if val is not None:
+        print(f"[pHash cache (get_features_with_cache)] {filepath} -> HIT")
+    else:
+        print(f"[pHash cache (get_features_with_cache)] {filepath} -> MISS")
+    return val
 
 def get_video_phash(filepath, frame_count=7, folder=None, cache=None):
     filepath = normalize_path(filepath)
@@ -59,8 +66,7 @@ def get_video_phash(filepath, frame_count=7, folder=None, cache=None):
             if not ret:
                 continue
             try:
-                img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                pil_img = Image.fromarray(img)
+                pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                 hash_val = imagehash.phash(pil_img)
                 hashes.append(hash_val)
             except Exception:
@@ -68,14 +74,24 @@ def get_video_phash(filepath, frame_count=7, folder=None, cache=None):
         cap.release()
         if not hashes:
             return None
-        return hashes
+        # 動画pHashはフレームごとのpHashの平均値
+        arr = np.array([h.hash for h in hashes])
+        avg_hash = (arr.mean(axis=0) > 0.5).astype(np.uint8)
+        return imagehash.ImageHash(avg_hash)
     if cache is not None:
         if filepath in cache:
+            print(f"[pHash cache HIT] {filepath}")
             return cache[filepath]
         val = calc_func(filepath)
+        print(f"[pHash cache MISS] {filepath}")
         cache[filepath] = val
         return val
-    return get_features_with_cache(filepath, calc_func, folder)
+    val = get_features_with_cache(filepath, calc_func, folder)
+    if val is not None:
+        print(f"[pHash cache (get_features_with_cache)] {filepath} -> HIT")
+    else:
+        print(f"[pHash cache (get_features_with_cache)] {filepath} -> MISS")
+    return val
 
 def get_cache_files(folder):
     folder = os.path.abspath(folder)
