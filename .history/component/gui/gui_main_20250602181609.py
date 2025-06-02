@@ -79,19 +79,20 @@ class DuplicateFinderGUI(QWidget):
 
     def on_thumb_update(self, path, pil_image):
         print(f"[DEBUG] on_thumb_update: path={path}, pil_image={'OK' if pil_image is not None else 'None'}")
+        # サムネイル生成完了時のコールバック
+        from PyQt5.QtCore import QTimer
         def update_ui():
             btn = self.thumb_widget_map.get(path)
-            if btn is None:
-                print(f"[ERROR] thumb_widget_mapにボタンが見つかりません: {path}")
-                print(f"[DEBUG] thumb_widget_map keys: {list(self.thumb_widget_map.keys())}")
-                return
-            if pil_image is not None:
+            if btn is not None and pil_image is not None:
+                # 既に削除されたウィジェットや非表示ウィジェットにはsetIconしない
                 if not btn.isVisible():
                     return
                 try:
+                    from component.thumbnail.thumbnail_util import pil_image_to_qpixmap
                     btn.setIcon(QIcon(pil_image_to_qpixmap(pil_image)))
                     btn.setIconSize(QSize(180, 180))
                 except RuntimeError:
+                    # QWidgetが既に削除済みの場合は無視
                     pass
         QTimer.singleShot(0, update_ui)
         # else: pass  # サムネイルボタンが見つからない場合は何もしない
@@ -175,7 +176,7 @@ class DuplicateFinderGUI(QWidget):
         layout.addWidget(self.folder_label)
         self.select_btn = QPushButton("[ フォルダ選択 ]")
         self.select_btn.setStyleSheet("font-size:17px;font-weight:bold;background:transparent;color:#00ffe7;border:2px solid #00ffe7;")
-        self.select_btn.clicked.connect(self.select_folder)
+        self.select_btn.clicked.connect(self.selectFiles)
         layout.addWidget(self.select_btn)
         # --- 進捗バー・ETA ---
         self.progress = QProgressBar()
@@ -235,24 +236,33 @@ class DuplicateFinderGUI(QWidget):
         # --- 初期表示で重複チェックを呼ばない（フォルダ選択後のみ呼ぶ） ---
 
     def selectFiles(self):
-        # ファイル選択ダイアログ
+        # フォルダ選択ダイアログ
         options = QFileDialog.Options()
-        files, _ = QFileDialog.getOpenFileNames(self, "Select Video/Image Files", "", "All Files (*);;Image Files (*.png;*.jpg;*.jpeg);;Video Files (*.mp4;*.avi)", options=options)
-        if files:
+        folder = QFileDialog.getExistingDirectory(self, "フォルダを選択", "", options=options)
+        if folder:
+            self.folder_label.setText(folder)
+            self.load_thumb_cache(folder)
+            files = get_image_and_video_files(folder)
+            self.clear_content()
             self.processFiles(files)
+            self.find_duplicates()  # フォルダ選択時に自動で重複チェックを実行
 
     def load_thumb_cache(self, folder=None):
+        print(f"[DEBUG] load_thumb_cache: folder={folder}")
         # サムネイルキャッシュをロード
         try:
             load_thumb_cache(folder)
-        except Exception:
+        except Exception as e:
+            print(f"[DEBUG] load_thumb_cache: Exception {e}")
             pass
 
     def save_thumb_cache(self, folder=None):
+        print(f"[DEBUG] save_thumb_cache: folder={folder}")
         # サムネイルキャッシュを保存
         try:
             save_thumb_cache(folder)
-        except Exception:
+        except Exception as e:
+            print(f"[DEBUG] save_thumb_cache: Exception {e}")
             pass
 
     def processFiles(self, files):
@@ -264,11 +274,13 @@ class DuplicateFinderGUI(QWidget):
         self.worker.start()
 
     def detectDuplicates(self):
-        # 重複検出ロジック
+        print("[DEBUG] detectDuplicates: start")
         while not self.fileQueue.empty():
             file = self.fileQueue.get()
+            print(f"[DEBUG] detectDuplicates: processing {file}")
             # ...ファイル処理コード...
             self.fileQueue.task_done()
+        print("[DEBUG] detectDuplicates: end")
 
     def runDetection(self):
         # 検出実行
@@ -354,6 +366,7 @@ class DuplicateFinderGUI(QWidget):
         self.cancel_btn.setEnabled(False)
 
     def find_duplicates(self):
+        print("[DEBUG] find_duplicates: start")
         self.progress.setValue(0)
         self.progress_time_label.setText("経過: 0.0 秒")
         self.eta_label.setText("")
@@ -362,140 +375,175 @@ class DuplicateFinderGUI(QWidget):
         start_time = time.time()
         folder = self.folder_label.text()
         def worker():
-            # 並列グループ化を有効化
+            print(f"[DEBUG] find_duplicates.worker: folder={folder}")
             duplicates, _ = find_duplicates_in_folder(folder, parallel=True)
+            print(f"[DEBUG] find_duplicates.worker: duplicates found={len(duplicates)}")
             total = len(duplicates)
+            last_update = time.time()
             for idx, group in enumerate(duplicates):
                 if self.cancel_requested:
+                    print("[DEBUG] find_duplicates.worker: cancel requested")
                     break
                 elapsed = time.time() - start_time
                 eta = (elapsed / (idx + 1)) * (total - (idx + 1)) if idx > 0 else 0
-                QTimer.singleShot(0, lambda v=idx+1, e=elapsed, t=eta: update_progress(self.progress, v, self.progress_time_label, self.eta_label, e, t))
+                if idx % 100 == 0 or time.time() - last_update > 0.1 or idx == total - 1:
+                    QTimer.singleShot(0, lambda v=idx+1, e=elapsed, t=eta: update_progress(self.progress, v, self.progress_time_label, self.eta_label, e, t))
+                    last_update = time.time()
             def update_ui():
-                self.clear_content()
-                if not duplicates:
-                    self.content_layout.addWidget(QLabel("重複ファイルは見つかりませんでした"))
-                    print("DEBUG: find_duplicates end (no duplicates)")
-                    return
-                self.group_widgets = []
-                self.thumb_widget_map = {}
-                self.thumb_cache = ThumbnailCache(folder)
-                self.stacked.setCurrentIndex(0)
-                print("DEBUG: stacked.setCurrentIndex(0) called")
-                for i, group in enumerate(duplicates):
-                    # 最後のグループかつエラーグループ（pHash失敗ファイル群）はエラーUIで描画
-                    if i == len(duplicates) - 1 and all(
-                        not isinstance(duplicates[0], list) or (isinstance(group, list) and all(get_thumbnail_for_file(f, (180, 180), cache=self.thumb_cache) is None for f in group))
-                    ):
-                        from component.group_ui import create_error_group_ui
-                        group_box = create_error_group_ui(
-                            group,
-                            get_thumbnail_for_file,
-                            show_detail_dialog,
-                            self.delete_single_file,
-                            thumb_cache=self.thumb_cache,
-                            defer_queue=self.thumb_queue,
-                            thumb_widget_map=self.thumb_widget_map
-                        )
-                        group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #ff4444; border-radius: 12px; padding: 8px;")
-                    else:
-                        group_box = create_duplicate_group_ui(
-                            group,
-                            get_thumbnail_for_file,
-                            show_detail_dialog,
-                            self.delete_single_file,
-                            show_compare_dialog,
-                            thumb_cache=self.thumb_cache,
-                            defer_queue=self.thumb_queue,
-                            thumb_widget_map=self.thumb_widget_map
-                        )
-                        group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #00ffe7; border-radius: 12px; padding: 8px;")
-                    self.content_layout.addWidget(group_box)
-                    self.group_widgets.append(group_box)
-                self.delete_btn.setEnabled(False)
-                elapsed = time.time() - start_time
-                update_progress(self.progress, 100, self.progress_time_label, self.eta_label, elapsed, 0)
-                self.save_thumb_cache(folder)
-                self.cancel_btn.setEnabled(False)
-                print("DEBUG: find_duplicates end")
+                print("[DEBUG] find_duplicates.worker: update_ui called")
+                try:
+                    self.clear_content()
+                    if not duplicates:
+                        self.content_layout.addWidget(QLabel("重複ファイルは見つかりませんでした"))
+                        print("DEBUG: find_duplicates end (no duplicates)")
+                        return
+                    self.group_widgets = []
+                    self.thumb_widget_map = {}
+                    self.thumb_cache = ThumbnailCache(folder)
+                    self.stacked.setCurrentIndex(0)
+                    print("DEBUG: stacked.setCurrentIndex(0) called")
+                    for i, group in enumerate(duplicates):
+                        # 最後のグループかつエラーグループ（pHash失敗ファイル群）はエラーUIで描画
+                        is_error_group = False
+                        if i == len(duplicates) - 1:
+                            if isinstance(group, list) and len(group) > 0:
+                                try:
+                                    # サムネイルが全てNoneならエラーグループ
+                                    is_error_group = all((get_thumbnail_for_file(f, (180, 180), cache=self.thumb_cache) is None) for f in group)
+                                except Exception:
+                                    is_error_group = False
+                        try:
+                            if is_error_group:
+                                from component.group_ui import create_error_group_ui
+                                group_box = create_error_group_ui(
+                                    group,
+                                    get_thumbnail_for_file,
+                                    show_detail_dialog,
+                                    self.delete_single_file,
+                                    thumb_cache=self.thumb_cache,
+                                    defer_queue=self.thumb_queue,
+                                    thumb_widget_map=self.thumb_widget_map
+                                )
+                                group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #ff4444; border-radius: 12px; padding: 8px;")
+                            else:
+                                group_box = create_duplicate_group_ui(
+                                    group,
+                                    get_thumbnail_for_file,
+                                    show_detail_dialog,
+                                    self.delete_single_file,
+                                    show_compare_dialog,
+                                    thumb_cache=self.thumb_cache,
+                                    defer_queue=self.thumb_queue,
+                                    thumb_widget_map=self.thumb_widget_map
+                                )
+                                group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #00ffe7; border-radius: 12px; padding: 8px;")
+                            self.content_layout.addWidget(group_box)
+                        except Exception as e:
+                            print(f"[DEBUG] update_ui: group UI exception: {e}")
+                    self.content_widget.adjustSize()
+                    print("DEBUG: find_duplicates end")
+                except Exception as e:
+                    print(f"[DEBUG] update_ui: outer exception: {e}")
             QTimer.singleShot(0, update_ui)
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=worker).start()
 
-    def clear_thumb_cache(self):
+    def check_folder_update(self):
+        # フォルダ内のファイル変化を監視・自動更新
         folder = self.folder_label.text()
         if not folder or folder == "フォルダ未選択":
-            show_warning_dialog(self, "警告", "先にフォルダを選択してください")
             return
-        reply = QMessageBox.question(self, "Confirm", "サムネイルキャッシュを削除しますか？", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if reply == QMessageBox.Yes:
-            thumb_cache_dir = os.path.join(folder, ".thumb_cache")
-            if os.path.exists(thumb_cache_dir):
-                shutil.rmtree(thumb_cache_dir)
-                show_info_dialog(self, "完了", "サムネイルキャッシュを削除しました")
-            else:
-                show_warning_dialog(self, "警告", "サムネイルキャッシュが見つかりません")
-            self.clear_content()
-            self.load_thumb_cache(folder)
-            def worker():
-                for i in range(101):
-                    if self.cancel_requested:
-                        break
-                    QTimer.singleShot(0, lambda v=i: update_progress(self.progress, v, self.progress_time_label))
-                    time.sleep(0.005)
-            threading.Thread(target=worker, daemon=True).start()
+        try:
+            state = get_folder_state(folder)
+        except Exception as e:
+            logging.warning("Failed to get folder state: %s", e)
+            return
+        if self.last_folder_state is None:
+            self.last_folder_state = state
+            return
+        if state != self.last_folder_state:
+            logging.info("Folder state changed, reloading...")
+            self.reload_folder()
+        self.last_folder_state = state
 
     def reload_folder(self):
+        # フォルダ再読み込み
         folder = self.folder_label.text()
         if not folder or folder == "フォルダ未選択":
             return
         self.clear_content()
         self.load_thumb_cache(folder)
-        def worker():
-            from component.thumbnail.thumbnail_util import get_no_thumbnail_image
-            no_thumb = get_no_thumbnail_image((180, 180))
-            total = len(self.thumb_widget_map)
-            for idx, file_path in enumerate(list(self.thumb_widget_map.keys())):
-                if self.cancel_requested:
-                    break
-                if file_path not in self.thumb_cache:
-                    btn = self.thumb_widget_map[file_path]
-                    QTimer.singleShot(0, lambda b=btn, nt=no_thumb: b.setIcon(QIcon(pil_image_to_qpixmap(nt))))
-                QTimer.singleShot(0, lambda v=idx+1: update_progress(self.progress, v, self.progress_time_label))
-                time.sleep(0.002)
-        threading.Thread(target=worker, daemon=True).start()
+        self.processFiles(get_image_and_video_files(folder))
+        self.cancel_btn.setEnabled(False)
+        self.request_cancel()
+        self.progress.setValue(0)
+        self.progress_time_label.setText("経過: 0.0 秒")
+        self.eta_label.setText("")
+        QMessageBox.information(self, "情報", "フォルダを再読み込みました。")
 
-    def check_folder_update(self):
-        # フォルダ内のファイル変更監視・再読み込み
+    def clear_thumb_cache(self):
+        print("[DEBUG] clear_thumb_cache: called")
         folder = self.folder_label.text()
         if not folder or folder == "フォルダ未選択":
+            print("[DEBUG] clear_thumb_cache: no folder selected")
             return
-        try:
-            current_state = get_folder_state(folder)
-            if self.last_folder_state is not None and current_state != self.last_folder_state:
-                print("DEBUG: Folder state changed, reloading...")
-                self.reload_folder()
-            self.last_folder_state = current_state
-        except Exception as e:
-            print("ERROR:", e)
-
-    def select_folder(self):
-        # フォルダ選択ダイアログを表示し、選択された場合のみ処理
-        folder = QFileDialog.getExistingDirectory(self, "フォルダ選択")
-        if folder:
-            if self.folder_label.text() == folder:
-                # すでに同じフォルダが選択されている場合は何もしない
-                return
-            self.folder_label.setText(folder)
-            self.find_duplicates()
+        reply = QMessageBox.question(self, "確認", "サムネイルキャッシュを削除しますか？", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            try:
+                print(f"[DEBUG] clear_thumb_cache: load_thumb_cache({folder})")
+                thumb_cache = load_thumb_cache(folder)
+                if thumb_cache:
+                    print("[DEBUG] clear_thumb_cache: cache loaded, clearing cache")
+                    if hasattr(thumb_cache, 'clear') and callable(thumb_cache.clear):
+                        thumb_cache.clear()
+                        thumb_cache.save()
+                    self.thumb_cache = thumb_cache
+                    self.clear_content()
+                    self.processFiles(get_image_and_video_files(folder))
+                    QMessageBox.information(self, "完了", "サムネイルキャッシュを削除しました。")
+                else:
+                    print("[DEBUG] clear_thumb_cache: no cache to clear")
+                    QMessageBox.information(self, "情報", "削除するキャッシュファイルが見つかりませんでした。")
+            except Exception as e:
+                print(f"[DEBUG] clear_thumb_cache: Exception {e}")
+                QMessageBox.critical(self, "エラー", f"サムネイルキャッシュの削除中にエラーが発生しました:\n{str(e)}")
 
     def delete_selected(self):
-        """
-        選択されたファイルを削除またはゴミ箱に移動する処理。
-        UIユーティリティの delete_selected_dialog を利用し、選択パスをクリア・UI更新も行う。
-        """
-        if not self.selected_paths:
-            show_warning_dialog(self, "警告", "削除するファイルが選択されていません")
+        # 選択ファイルをゴミ箱に移動
+        if not self.selected_paths or len(self.selected_paths) == 0:
             return
-        delete_selected_dialog(self, list(self.selected_paths), self.thumb_widget_map, self.clear_content)
-        self.selected_paths.clear()
-        self.delete_btn.setEnabled(False)
+        reply = QMessageBox.question(self, "確認", "選択したファイルをゴミ箱に移動しますか？", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            failed_files = []
+            for path in self.selected_paths:
+                try:
+                    move_to_trash(path)
+                except Exception as e:
+                    logging.warning("Failed to move to trash %s: %s", path, e)
+                    failed_files.append(path)
+            if failed_files:
+                QMessageBox.warning(self, "一部失敗", f"以下のファイルの移動に失敗しました:\n" + "\n".join(failed_files))
+            self.selected_paths.clear()
+            self.clear_content()
+            self.processFiles(get_image_and_video_files(self.folder_label.text()))
+            QMessageBox.information(self, "完了", "選択ファイルをゴミ箱に移動しました。")
+
+    def delete_single_file(self, file_path):
+        # 単一ファイルをゴミ箱に移動
+        try:
+            move_to_trash(file_path)
+            QMessageBox.information(self, "完了", f"ファイルをゴミ箱に移動しました:\n{file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"ファイルの削除中にエラーが発生しました:\n{str(e)}")
+
+    def clear_content(self):
+        # サムネイル・グループ表示エリアをクリア
+        if hasattr(self, 'content_layout'):
+            while self.content_layout.count():
+                item = self.content_layout.takeAt(0)
+                if item is not None:
+                    w = item.widget()
+                    if w is not None:
+                        w.setParent(None)
+                        w.deleteLater()
+        self.group_widgets = []
+        self.thumb_widget_map = {}

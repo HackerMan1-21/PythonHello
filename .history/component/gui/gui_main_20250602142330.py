@@ -78,20 +78,20 @@ class DuplicateFinderGUI(QWidget):
         self.auto_reload_timer.timeout.connect(self.check_folder_update)
 
     def on_thumb_update(self, path, pil_image):
-        print(f"[DEBUG] on_thumb_update: path={path}, pil_image={'OK' if pil_image is not None else 'None'}")
+        # サムネイル生成完了時のコールバック
+        from PyQt5.QtCore import QTimer
         def update_ui():
             btn = self.thumb_widget_map.get(path)
-            if btn is None:
-                print(f"[ERROR] thumb_widget_mapにボタンが見つかりません: {path}")
-                print(f"[DEBUG] thumb_widget_map keys: {list(self.thumb_widget_map.keys())}")
-                return
-            if pil_image is not None:
+            if btn is not None and pil_image is not None:
+                # 既に削除されたウィジェットや非表示ウィジェットにはsetIconしない
                 if not btn.isVisible():
                     return
                 try:
+                    from component.thumbnail.thumbnail_util import pil_image_to_qpixmap
                     btn.setIcon(QIcon(pil_image_to_qpixmap(pil_image)))
                     btn.setIconSize(QSize(180, 180))
                 except RuntimeError:
+                    # QWidgetが既に削除済みの場合は無視
                     pass
         QTimer.singleShot(0, update_ui)
         # else: pass  # サムネイルボタンが見つからない場合は何もしない

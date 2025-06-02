@@ -4,7 +4,6 @@ import os
 import threading
 import pickle
 from PIL import Image, ImageDraw
-from PIL.Image import Resampling
 import cv2
 from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtCore import QThread, QCoreApplication
@@ -91,7 +90,7 @@ class ThumbnailCache:
             # 最も古いアクセスのkeyを削除
             if not self.access_times:
                 break
-            oldest_key = min(self.access_times, key=self.access_times.get)  # type: ignore
+            oldest_key = min(self.access_times, key=self.access_times.get)
             v = self.cache.pop(oldest_key, None)
             self.access_times.pop(oldest_key, None)
             if v is not None:
@@ -122,31 +121,35 @@ def get_no_thumbnail_image(size=(180, 180)):
     return img
 
 def get_image_thumbnail(filepath, size=(180,180), cache=None, defer_queue=None, is_video=False, error_files=None):
-    filepath = os.path.abspath(os.path.normpath(filepath))
     key = (filepath, size)
     if cache is not None:
         thumb = cache.get(key)
         if thumb is not None:
             return thumb
+    if defer_queue is not None:
+        defer_queue.put((filepath, size, is_video, error_files))
+        return get_no_thumbnail_image(size)
     try:
         img = Image.open(filepath).convert("RGB")
-        img.thumbnail(size, resample=Resampling.LANCZOS)
-        bg = Image.new("RGB", size, (60, 60, 60))  # type: ignore
+        img.thumbnail(size, Image.LANCZOS)
+        bg = Image.new("RGB", size, (60, 60, 60))
         offset = ((size[0] - img.width) // 2, (size[1] - img.height) // 2)
         bg.paste(img, offset)
         if cache is not None:
             cache.set(key, bg.copy())
         return bg
     except Exception:
-        return None
+        return get_no_thumbnail_image(size)
 
 def get_video_thumbnail(filepath, size=(180,180), error_files=None, cache=None, defer_queue=None):
-    filepath = os.path.abspath(os.path.normpath(filepath))
     key = (filepath, size)
     if cache is not None:
         thumb = cache.get(key)
         if thumb is not None:
             return thumb
+    if defer_queue is not None:
+        defer_queue.put((filepath, size, True, error_files))
+        return get_no_thumbnail_image(size)
     try:
         cap = cv2.VideoCapture(filepath)
         ret, frame = cap.read()
@@ -154,11 +157,11 @@ def get_video_thumbnail(filepath, size=(180,180), error_files=None, cache=None, 
         if not ret:
             if error_files is not None:
                 error_files.append(f"{filepath} : 動画フレーム取得失敗")
-            return None
+            return get_no_thumbnail_image(size)
         img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(img)
-        pil_img.thumbnail(size, resample=Resampling.LANCZOS)
-        bg = Image.new("RGB", size, (60, 60, 60))  # type: ignore
+        pil_img.thumbnail(size, Image.LANCZOS)
+        bg = Image.new("RGB", size, (60, 60, 60))
         offset = ((size[0] - pil_img.width) // 2, (size[1] - pil_img.height) // 2)
         bg.paste(pil_img, offset)
         if cache is not None:
@@ -167,16 +170,15 @@ def get_video_thumbnail(filepath, size=(180,180), error_files=None, cache=None, 
     except Exception as e:
         if error_files is not None:
             error_files.append(f"{filepath} : {e}")
-        return None
+        return get_no_thumbnail_image(size)
 
 def get_thumbnail_for_file(filepath, size=(180, 90), error_files=None, cache=None, defer_queue=None):
-    filepath = os.path.abspath(os.path.normpath(filepath))
     ext = os.path.splitext(filepath)[1].lower()
     video_exts = ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
     if ext in video_exts:
-        return get_video_thumbnail(filepath, size, error_files, cache, None)
+        return get_video_thumbnail(filepath, size, error_files, cache, defer_queue)
     else:
-        return get_image_thumbnail(filepath, size, cache, None, is_video=False, error_files=error_files)
+        return get_image_thumbnail(filepath, size, cache, defer_queue, is_video=False, error_files=error_files)
 
 # サムネイル生成ワーカー（PIL.Imageのみ扱う。Qtオブジェクトは絶対扱わない）
 class ThumbnailWorker(threading.Thread):
@@ -192,12 +194,7 @@ class ThumbnailWorker(threading.Thread):
             print(f"[DEBUG] ThumbnailWorker.run: got item {item}")
             if item is None:
                 break
-            try:
-                path, size, is_video, error_files = item
-            except Exception as e:
-                print(f"[ERROR] ThumbnailWorker.run: failed to unpack item {item}: {e}")
-                self.q.task_done()
-                continue
+            path, size, is_video, error_files = item
             try:
                 if is_video:
                     pil_img = get_video_thumbnail(path, size, error_files, self.cache)

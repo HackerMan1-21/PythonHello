@@ -78,20 +78,20 @@ class DuplicateFinderGUI(QWidget):
         self.auto_reload_timer.timeout.connect(self.check_folder_update)
 
     def on_thumb_update(self, path, pil_image):
-        print(f"[DEBUG] on_thumb_update: path={path}, pil_image={'OK' if pil_image is not None else 'None'}")
+        # サムネイル生成完了時のコールバック
+        from PyQt5.QtCore import QTimer
         def update_ui():
             btn = self.thumb_widget_map.get(path)
-            if btn is None:
-                print(f"[ERROR] thumb_widget_mapにボタンが見つかりません: {path}")
-                print(f"[DEBUG] thumb_widget_map keys: {list(self.thumb_widget_map.keys())}")
-                return
-            if pil_image is not None:
+            if btn is not None and pil_image is not None:
+                # 既に削除されたウィジェットや非表示ウィジェットにはsetIconしない
                 if not btn.isVisible():
                     return
                 try:
+                    from component.thumbnail.thumbnail_util import pil_image_to_qpixmap
                     btn.setIcon(QIcon(pil_image_to_qpixmap(pil_image)))
                     btn.setIconSize(QSize(180, 180))
                 except RuntimeError:
+                    # QWidgetが既に削除済みの場合は無視
                     pass
         QTimer.singleShot(0, update_ui)
         # else: pass  # サムネイルボタンが見つからない場合は何もしない
@@ -362,15 +362,18 @@ class DuplicateFinderGUI(QWidget):
         start_time = time.time()
         folder = self.folder_label.text()
         def worker():
-            # 並列グループ化を有効化
             duplicates, _ = find_duplicates_in_folder(folder, parallel=True)
             total = len(duplicates)
+            last_update = time.time()
             for idx, group in enumerate(duplicates):
                 if self.cancel_requested:
                     break
                 elapsed = time.time() - start_time
                 eta = (elapsed / (idx + 1)) * (total - (idx + 1)) if idx > 0 else 0
-                QTimer.singleShot(0, lambda v=idx+1, e=elapsed, t=eta: update_progress(self.progress, v, self.progress_time_label, self.eta_label, e, t))
+                # 100回に1回 or 0.1秒ごとに進捗更新
+                if idx % 100 == 0 or time.time() - last_update > 0.1 or idx == total - 1:
+                    QTimer.singleShot(0, lambda v=idx+1, e=elapsed, t=eta: update_progress(self.progress, v, self.progress_time_label, self.eta_label, e, t))
+                    last_update = time.time()
             def update_ui():
                 self.clear_content()
                 if not duplicates:
@@ -384,118 +387,5 @@ class DuplicateFinderGUI(QWidget):
                 print("DEBUG: stacked.setCurrentIndex(0) called")
                 for i, group in enumerate(duplicates):
                     # 最後のグループかつエラーグループ（pHash失敗ファイル群）はエラーUIで描画
-                    if i == len(duplicates) - 1 and all(
-                        not isinstance(duplicates[0], list) or (isinstance(group, list) and all(get_thumbnail_for_file(f, (180, 180), cache=self.thumb_cache) is None for f in group))
-                    ):
-                        from component.group_ui import create_error_group_ui
-                        group_box = create_error_group_ui(
-                            group,
-                            get_thumbnail_for_file,
-                            show_detail_dialog,
-                            self.delete_single_file,
-                            thumb_cache=self.thumb_cache,
-                            defer_queue=self.thumb_queue,
-                            thumb_widget_map=self.thumb_widget_map
-                        )
-                        group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #ff4444; border-radius: 12px; padding: 8px;")
-                    else:
-                        group_box = create_duplicate_group_ui(
-                            group,
-                            get_thumbnail_for_file,
-                            show_detail_dialog,
-                            self.delete_single_file,
-                            show_compare_dialog,
-                            thumb_cache=self.thumb_cache,
-                            defer_queue=self.thumb_queue,
-                            thumb_widget_map=self.thumb_widget_map
-                        )
-                        group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #00ffe7; border-radius: 12px; padding: 8px;")
-                    self.content_layout.addWidget(group_box)
-                    self.group_widgets.append(group_box)
-                self.delete_btn.setEnabled(False)
-                elapsed = time.time() - start_time
-                update_progress(self.progress, 100, self.progress_time_label, self.eta_label, elapsed, 0)
-                self.save_thumb_cache(folder)
-                self.cancel_btn.setEnabled(False)
-                print("DEBUG: find_duplicates end")
-            QTimer.singleShot(0, update_ui)
-        threading.Thread(target=worker, daemon=True).start()
-
-    def clear_thumb_cache(self):
-        folder = self.folder_label.text()
-        if not folder or folder == "フォルダ未選択":
-            show_warning_dialog(self, "警告", "先にフォルダを選択してください")
-            return
-        reply = QMessageBox.question(self, "Confirm", "サムネイルキャッシュを削除しますか？", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if reply == QMessageBox.Yes:
-            thumb_cache_dir = os.path.join(folder, ".thumb_cache")
-            if os.path.exists(thumb_cache_dir):
-                shutil.rmtree(thumb_cache_dir)
-                show_info_dialog(self, "完了", "サムネイルキャッシュを削除しました")
-            else:
-                show_warning_dialog(self, "警告", "サムネイルキャッシュが見つかりません")
-            self.clear_content()
-            self.load_thumb_cache(folder)
-            def worker():
-                for i in range(101):
-                    if self.cancel_requested:
-                        break
-                    QTimer.singleShot(0, lambda v=i: update_progress(self.progress, v, self.progress_time_label))
-                    time.sleep(0.005)
-            threading.Thread(target=worker, daemon=True).start()
-
-    def reload_folder(self):
-        folder = self.folder_label.text()
-        if not folder or folder == "フォルダ未選択":
-            return
-        self.clear_content()
-        self.load_thumb_cache(folder)
-        def worker():
-            from component.thumbnail.thumbnail_util import get_no_thumbnail_image
-            no_thumb = get_no_thumbnail_image((180, 180))
-            total = len(self.thumb_widget_map)
-            for idx, file_path in enumerate(list(self.thumb_widget_map.keys())):
-                if self.cancel_requested:
-                    break
-                if file_path not in self.thumb_cache:
-                    btn = self.thumb_widget_map[file_path]
-                    QTimer.singleShot(0, lambda b=btn, nt=no_thumb: b.setIcon(QIcon(pil_image_to_qpixmap(nt))))
-                QTimer.singleShot(0, lambda v=idx+1: update_progress(self.progress, v, self.progress_time_label))
-                time.sleep(0.002)
-        threading.Thread(target=worker, daemon=True).start()
-
-    def check_folder_update(self):
-        # フォルダ内のファイル変更監視・再読み込み
-        folder = self.folder_label.text()
-        if not folder or folder == "フォルダ未選択":
-            return
-        try:
-            current_state = get_folder_state(folder)
-            if self.last_folder_state is not None and current_state != self.last_folder_state:
-                print("DEBUG: Folder state changed, reloading...")
-                self.reload_folder()
-            self.last_folder_state = current_state
-        except Exception as e:
-            print("ERROR:", e)
-
-    def select_folder(self):
-        # フォルダ選択ダイアログを表示し、選択された場合のみ処理
-        folder = QFileDialog.getExistingDirectory(self, "フォルダ選択")
-        if folder:
-            if self.folder_label.text() == folder:
-                # すでに同じフォルダが選択されている場合は何もしない
-                return
-            self.folder_label.setText(folder)
-            self.find_duplicates()
-
-    def delete_selected(self):
-        """
-        選択されたファイルを削除またはゴミ箱に移動する処理。
-        UIユーティリティの delete_selected_dialog を利用し、選択パスをクリア・UI更新も行う。
-        """
-        if not self.selected_paths:
-            show_warning_dialog(self, "警告", "削除するファイルが選択されていません")
-            return
-        delete_selected_dialog(self, list(self.selected_paths), self.thumb_widget_map, self.clear_content)
-        self.selected_paths.clear()
-        self.delete_btn.setEnabled(False)
+                    if i == len(duplicates) - 1 and (
+   

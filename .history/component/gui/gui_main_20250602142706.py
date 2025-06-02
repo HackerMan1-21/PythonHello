@@ -78,20 +78,20 @@ class DuplicateFinderGUI(QWidget):
         self.auto_reload_timer.timeout.connect(self.check_folder_update)
 
     def on_thumb_update(self, path, pil_image):
-        print(f"[DEBUG] on_thumb_update: path={path}, pil_image={'OK' if pil_image is not None else 'None'}")
+        # サムネイル生成完了時のコールバック
+        from PyQt5.QtCore import QTimer
         def update_ui():
             btn = self.thumb_widget_map.get(path)
-            if btn is None:
-                print(f"[ERROR] thumb_widget_mapにボタンが見つかりません: {path}")
-                print(f"[DEBUG] thumb_widget_map keys: {list(self.thumb_widget_map.keys())}")
-                return
-            if pil_image is not None:
+            if btn is not None and pil_image is not None:
+                # 既に削除されたウィジェットや非表示ウィジェットにはsetIconしない
                 if not btn.isVisible():
                     return
                 try:
+                    from component.thumbnail.thumbnail_util import pil_image_to_qpixmap
                     btn.setIcon(QIcon(pil_image_to_qpixmap(pil_image)))
                     btn.setIconSize(QSize(180, 180))
                 except RuntimeError:
+                    # QWidgetが既に削除済みの場合は無視
                     pass
         QTimer.singleShot(0, update_ui)
         # else: pass  # サムネイルボタンが見つからない場合は何もしない
@@ -362,15 +362,18 @@ class DuplicateFinderGUI(QWidget):
         start_time = time.time()
         folder = self.folder_label.text()
         def worker():
-            # 並列グループ化を有効化
             duplicates, _ = find_duplicates_in_folder(folder, parallel=True)
             total = len(duplicates)
+            last_update = time.time()
             for idx, group in enumerate(duplicates):
                 if self.cancel_requested:
                     break
                 elapsed = time.time() - start_time
                 eta = (elapsed / (idx + 1)) * (total - (idx + 1)) if idx > 0 else 0
-                QTimer.singleShot(0, lambda v=idx+1, e=elapsed, t=eta: update_progress(self.progress, v, self.progress_time_label, self.eta_label, e, t))
+                # 100回に1回 or 0.1秒ごとに進捗更新
+                if idx % 100 == 0 or time.time() - last_update > 0.1 or idx == total - 1:
+                    QTimer.singleShot(0, lambda v=idx+1, e=elapsed, t=eta: update_progress(self.progress, v, self.progress_time_label, self.eta_label, e, t))
+                    last_update = time.time()
             def update_ui():
                 self.clear_content()
                 if not duplicates:
@@ -437,10 +440,13 @@ class DuplicateFinderGUI(QWidget):
             self.clear_content()
             self.load_thumb_cache(folder)
             def worker():
+                last_update = time.time()
                 for i in range(101):
                     if self.cancel_requested:
                         break
-                    QTimer.singleShot(0, lambda v=i: update_progress(self.progress, v, self.progress_time_label))
+                    if i % 10 == 0 or time.time() - last_update > 0.1 or i == 100:
+                        QTimer.singleShot(0, lambda v=i: update_progress(self.progress, v, self.progress_time_label))
+                        last_update = time.time()
                     time.sleep(0.005)
             threading.Thread(target=worker, daemon=True).start()
 
@@ -454,13 +460,16 @@ class DuplicateFinderGUI(QWidget):
             from component.thumbnail.thumbnail_util import get_no_thumbnail_image
             no_thumb = get_no_thumbnail_image((180, 180))
             total = len(self.thumb_widget_map)
+            last_update = time.time()
             for idx, file_path in enumerate(list(self.thumb_widget_map.keys())):
                 if self.cancel_requested:
                     break
                 if file_path not in self.thumb_cache:
                     btn = self.thumb_widget_map[file_path]
                     QTimer.singleShot(0, lambda b=btn, nt=no_thumb: b.setIcon(QIcon(pil_image_to_qpixmap(nt))))
-                QTimer.singleShot(0, lambda v=idx+1: update_progress(self.progress, v, self.progress_time_label))
+                if idx % 100 == 0 or time.time() - last_update > 0.1 or idx == total - 1:
+                    QTimer.singleShot(0, lambda v=idx+1: update_progress(self.progress, v, self.progress_time_label))
+                    last_update = time.time()
                 time.sleep(0.002)
         threading.Thread(target=worker, daemon=True).start()
 

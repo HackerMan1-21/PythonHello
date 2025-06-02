@@ -42,9 +42,7 @@ def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_c
         thumb_btn.setIconSize(QSize(180, 180))
         # defer_queue利用時は thumb_widget_map でボタンを記録
         if thumb_widget_map is not None:
-            import os
-            norm_path = os.path.abspath(os.path.normpath(f))
-            thumb_widget_map[norm_path] = thumb_btn
+            thumb_widget_map[f] = thumb_btn
         thumb_btn.setStyleSheet("background:transparent;border:2px solid #00ffe7;border-radius:10px;")
         # サムネイルボタンのクリックで詳細ダイアログを表示
         thumb_btn.clicked.connect(lambda _, path=f: detail_cb(parent, path))
@@ -56,7 +54,7 @@ def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_c
         # フォルダを開くボタン
         open_folder_btn = QPushButton("フォルダを開く")
         open_folder_btn.setStyleSheet("font-size:11px;color:#00ff99;border:1px solid #00ff99;border-radius:6px;")
-        def open_folder(path):
+        def open_folder(path=f):
             import os, subprocess, sys
             folder = os.path.dirname(path)
             if os.path.exists(folder):
@@ -66,7 +64,7 @@ def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_c
                     subprocess.Popen(['open', folder])
                 else:
                     subprocess.Popen(['xdg-open', folder])
-        open_folder_btn.clicked.connect(lambda _, path=f: open_folder(path))
+        open_folder_btn.clicked.connect(open_folder)
         del_btn = QPushButton("削除")
         del_btn.setStyleSheet("font-size:12px;color:#ff00c8;max-width:180px;")
         del_btn.setFixedWidth(180)
@@ -105,8 +103,6 @@ def show_face_grouping_dialog(parent, groups, move_selected_files_to_folder_func
             thumb_btn.setFixedSize(180, 180)
             def set_icon(btn=thumb_btn, path=f):
                 pil_thumb = get_thumbnail_for_file(path, (180, 180), cache=thumb_cache, defer_queue=defer_queue)
-                if pil_thumb is None:
-                    return  # サムネイル生成失敗時はボタンを作らない
                 from component.thumbnail.thumbnail_util import pil_image_to_qpixmap
                 btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
                 btn.setIconSize(QSize(180, 180))
@@ -195,8 +191,6 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
             thumb_btn.setFixedSize(180, 180)
             def set_icon(btn=thumb_btn, path=f):
                 pil_thumb = get_thumbnail_for_file(path, (180, 180), cache=thumb_cache, defer_queue=defer_queue)
-                if pil_thumb is None:
-                    return  # サムネイル生成失敗時はボタンを作らない
                 from component.thumbnail.thumbnail_util import pil_image_to_qpixmap
                 btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
                 btn.setIconSize(QSize(180, 180))
@@ -259,27 +253,23 @@ def create_error_group_ui(error_files, get_thumbnail_for_file, detail_cb, delete
     grid.setVerticalSpacing(16)
     max_col = 4
     for idx, f in enumerate(error_files):
-        # サムネイル取得不可なのでNo Thumbnail表示→仮画像アイコンのみに統一
+        # サムネイル取得不可なのでNo Thumbnail表示
         thumb_btn = QPushButton()
         thumb_btn.setFixedSize(180, 180)
         thumb_btn.setIconSize(QSize(180, 180))
-        thumb_btn.setText("")
-        from component.thumbnail.thumbnail_util import get_no_thumbnail_image, pil_image_to_qpixmap
-        thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((180, 180)))))
+        thumb_btn.setText("No Thumbnail")
         thumb_btn.setStyleSheet("background:transparent;border:2px solid #ff4444;color:#ff4444;font-size:15px;border-radius:10px;")
         thumb_btn.clicked.connect(lambda _, path=f: detail_cb(path))
         if thumb_widget_map is not None:
-            import os
-            norm_path = os.path.abspath(os.path.normpath(f))
-            thumb_widget_map[norm_path] = thumb_btn
+            thumb_widget_map[f] = thumb_btn
         fname = os.path.basename(f)
         name_label = QLabel(fname)
-        # name_label.setAlignment(Qt.AlignCenter)  # Qt.AlignCenter未定義エラー回避のためコメントアウト
+        name_label.setAlignment(Qt.AlignCenter)
         name_label.setStyleSheet("font-size:12px;color:#ff4444;font-weight:bold;max-width:180px;")
         name_label.setWordWrap(True)
         # ファイルパスラベルを右クリックでエクスプローラーでフォルダを開く（QLabelはmousePressEventの割り当てが困難なため、右クリックメニューで対応）
         path_label = QLabel(f)
-        # path_label.setAlignment(Qt.AlignCenter)  # Qt.AlignCenter未定義エラー回避のためコメントアウト
+        path_label.setAlignment(Qt.AlignCenter)
         path_label.setWordWrap(True)
         path_label.setStyleSheet("font-size:10px;color:#ffb300;max-width:180px;")
         del_btn = QPushButton("削除")
