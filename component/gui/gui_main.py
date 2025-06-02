@@ -61,7 +61,7 @@ print("DEBUG: gui_main.py loaded from", __file__)
 # --- ここにDuplicateFinderGUIクラス本体を移植 ---
 
 class DuplicateFinderGUI(QWidget):
-    update_ui_signal = pyqtSignal(object, object)  # (duplicates, folder)
+    update_ui_signal = pyqtSignal(object, object, object, object, object)  # (duplicates, folder, elapsed_time, eta_time, remain_count)
 
     def __init__(self, parent=None):
         super(DuplicateFinderGUI, self).__init__(parent)
@@ -164,16 +164,14 @@ class DuplicateFinderGUI(QWidget):
         self.select_btn.setStyleSheet("font-size:17px;font-weight:bold;background:transparent;color:#00ffe7;border:2px solid #00ffe7;")
         self.select_btn.clicked.connect(self.selectFiles)
         layout.addWidget(self.select_btn)
-        # --- 進捗バー・ETA ---
+        # --- 統合ステータスラベル ---
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("font-size:15px;color:#00ffe7;font-weight:bold;margin-bottom:6px;")
+        layout.addWidget(self.status_label)
+        # --- 進捗バー ---
         self.progress = QProgressBar()
         self.progress.setValue(0)
         layout.addWidget(self.progress)
-        self.progress_time_label = QLabel("")
-        self.progress_time_label.setStyleSheet("font-size:13px;color:#00ff99;padding:2px 0 8px 0;")
-        layout.addWidget(self.progress_time_label)
-        self.eta_label = QLabel("")
-        self.eta_label.setStyleSheet("font-size:13px;color:#ffb300;padding:2px 0 8px 0;")
-        layout.addWidget(self.eta_label)
         # --- サムネイル/グループ表示用スクロールエリア ---
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -378,8 +376,6 @@ class DuplicateFinderGUI(QWidget):
     def find_duplicates(self):
         print("[DEBUG] find_duplicates: start")
         self.progress.setValue(0)
-        self.progress_time_label.setText("経過: 0.0 秒")
-        self.eta_label.setText("")
         self.cancel_btn.setEnabled(True)
         self.cancel_requested = False
         start_time = time.time()
@@ -390,22 +386,45 @@ class DuplicateFinderGUI(QWidget):
             print(f"[DEBUG] find_duplicates.worker: duplicates found={len(duplicates)}")
             total = len(duplicates)
             last_update = time.time()
+            elapsed = 0
+            eta = 0
+            remain = total
             for idx, group in enumerate(duplicates):
                 if self.cancel_requested:
                     print("[DEBUG] find_duplicates.worker: cancel requested")
                     break
                 elapsed = time.time() - start_time
                 eta = (elapsed / (idx + 1)) * (total - (idx + 1)) if idx > 0 else 0
-                if idx % 100 == 0 or time.time() - last_update > 0.1 or idx == total - 1:
-                    QTimer.singleShot(0, lambda v=idx+1, e=elapsed, t=eta: update_progress(self.progress, v, self.progress_time_label, self.eta_label, e, t))
-                    last_update = time.time()
+                remain = total - (idx + 1)
+                # 進捗・経過・ETAを毎回UIスレッドで更新
+                QTimer.singleShot(0, lambda v=idx+1, e=elapsed, t=eta: update_progress(self.progress, v, self.status_label, self.eta_label, e, t))
+                last_update = time.time()
             print("[DEBUG] find_duplicates.worker: QTimer.singleShot before update_ui")
-            self.update_ui_signal.emit(duplicates, folder)
+            # emit時に最新の値を渡す
+            self.update_ui_signal.emit(duplicates, folder, elapsed, eta, remain)
             print("[DEBUG] find_duplicates.worker: signal emitted after update_ui")
         threading.Thread(target=worker).start()
 
-    def update_ui(self, duplicates, folder):
+    def update_ui(self, duplicates, folder, elapsed_time=None, eta_time=None, remain_count=None):
         print("[DEBUG] update_ui: called (first line)")
+        # --- 統合ステータスラベルの更新 ---
+        status_parts = []
+        if elapsed_time is not None:
+            if isinstance(elapsed_time, float):
+                elapsed_str = f"{elapsed_time:.1f}秒"
+            else:
+                elapsed_str = str(elapsed_time)
+            status_parts.append(f"経過時間: {elapsed_str}")
+        if eta_time is not None:
+            if isinstance(eta_time, float):
+                eta_str = f"{eta_time:.1f}秒"
+            else:
+                eta_str = str(eta_time)
+            status_parts.append(f"予測終了時間: {eta_str}")
+        if remain_count is not None:
+            status_parts.append(f"残り: {remain_count}件")
+        status_text = '　'.join(status_parts)
+        self.status_label.setText(status_text)
         try:
             self.clear_content()
             if not duplicates:
@@ -448,7 +467,11 @@ class DuplicateFinderGUI(QWidget):
                             show_compare_dialog,
                             thumb_cache=self.thumb_cache,
                             defer_queue=self.thumb_queue,
-                            thumb_widget_map=self.thumb_widget_map
+                            thumb_widget_map=self.thumb_widget_map,
+                            parent=self,
+                            elapsed_time=elapsed_time,
+                            eta_time=eta_time,
+                            remain_count=remain_count
                         )
                         group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #00ffe7; border-radius: 12px; padding: 8px;")
                     self.content_layout.addWidget(group_box)
@@ -456,8 +479,6 @@ class DuplicateFinderGUI(QWidget):
                     for file_path in group:
                         if file_path not in self.thumb_widget_map:
                             continue
-                        # サムネイル生成要求をキューに追加
-                        # サムネイル生成要求をキューに追加（サイズとファイルタイプ情報を含む）
                         ext = os.path.splitext(file_path)[1].lower()
                         is_video = ext in ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
                         self.thumb_queue.put((file_path, (180, 180), is_video, None))
@@ -497,8 +518,7 @@ class DuplicateFinderGUI(QWidget):
         self.cancel_btn.setEnabled(False)
         self.request_cancel()
         self.progress.setValue(0)
-        self.progress_time_label.setText("経過: 0.0 秒")
-        self.eta_label.setText("")
+        self.status_label.setText("経過: 0.0 秒")
         QMessageBox.information(self, "情報", "フォルダを再読み込みました。")
 
     def clear_thumb_cache(self):
@@ -544,14 +564,14 @@ class DuplicateFinderGUI(QWidget):
             if failed_files:
                 QMessageBox.warning(self, "一部失敗", f"以下のファイルの移動に失敗しました:\n" + "\n".join(failed_files))
             self.selected_paths.clear()
-            self.clear_content()
-            self.processFiles(get_image_and_video_files(self.folder_label.text()))
+            self.find_duplicates()  # 削除後に重複チェックでUIを再構築
             QMessageBox.information(self, "完了", "選択ファイルをゴミ箱に移動しました。")
 
     def delete_single_file(self, file_path):
         # 単一ファイルをゴミ箱に移動
         try:
             move_to_trash(file_path)
+            self.find_duplicates()  # 削除後に重複チェックでUIを再構築
             QMessageBox.information(self, "完了", f"ファイルをゴミ箱に移動しました:\n{file_path}")
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"ファイルの削除中にエラーが発生しました:\n{str(e)}")
