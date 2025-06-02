@@ -41,8 +41,6 @@ try:
     import face_recognition
 except Exception as e:
     print("face_recognitionのインポート時にエラー:", e)
-    print("Python実行ファイル:", sys.executable)
-    print("sys.path:", sys.path)
     if "No module named 'face_recognition_models'" in str(e):
         print("face_recognition_modelsが見つかりません。以下のコマンドでインストールしてください:\n")
         print("pip install git+https://github.com/ageitgey/face_recognition_models\n")
