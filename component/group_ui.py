@@ -33,24 +33,25 @@ def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_c
     grid.setVerticalSpacing(16)
     max_col = 4
     for idx, f in enumerate(group):
+        # サムネイルボタン
         thumb_btn = QPushButton()
         thumb_btn.setFixedSize(180, 180)
-        # サムネイル即時取得できる場合のみセット、defer時はコールバックでセット
         pil_thumb = get_thumbnail_for_file(f, (180, 180), cache=thumb_cache, defer_queue=defer_queue)
-        from component.thumbnail.thumbnail_util import pil_image_to_qpixmap
         thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
         thumb_btn.setIconSize(QSize(180, 180))
-        # defer_queue利用時は thumb_widget_map でボタンを記録
-        if thumb_widget_map is not None:
-            import os
-            norm_path = os.path.abspath(os.path.normpath(f))
-            thumb_widget_map[norm_path] = thumb_btn
         thumb_btn.setStyleSheet("background:transparent;border:2px solid #00ffe7;border-radius:10px;")
-        # サムネイルボタンのクリックで詳細ダイアログを表示
         thumb_btn.clicked.connect(lambda _, path=f: detail_cb(parent, path))
+
+        # 情報部（右側）
+        info_vbox = QVBoxLayout()
+        info_vbox.setSpacing(4)
+        info_vbox.setContentsMargins(0, 0, 0, 0)
+
         fname = os.path.basename(f)
         name_label = QLabel(fname)
         name_label.setStyleSheet("font-size:12px;color:#00ffe7;font-weight:bold;max-width:180px;")
+        name_label.setMaximumWidth(180)
+
         # ファイルサイズ取得
         try:
             size_bytes = os.path.getsize(f)
@@ -102,6 +103,7 @@ def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_c
             last2 = folder_path
         path_label = QLabel(last2)
         path_label.setStyleSheet("font-size:10px;color:#00ff99;max-width:180px;")
+        path_label.setMaximumWidth(180)
         path_label.setWordWrap(True)
         from PyQt5.QtCore import Qt
         path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -123,17 +125,33 @@ def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_c
         del_btn.setStyleSheet("font-size:12px;color:#ff00c8;max-width:180px;")
         del_btn.setFixedWidth(180)
         del_btn.clicked.connect(lambda _, path=f: delete_cb(path))
-        vbox = QVBoxLayout()
-        vbox.setSpacing(2)
-        vbox.setContentsMargins(2, 2, 2, 2)
-        vbox.addWidget(thumb_btn)
-        vbox.addWidget(name_label)
-        vbox.addWidget(size_label)  # ここでサイズ＋動画長ラベルを追加
-        vbox.addWidget(path_label)
-        vbox.addWidget(open_folder_btn)
-        vbox.addWidget(del_btn)
+        # ボタン横並び
+        btn_hbox = QHBoxLayout()
+        btn_hbox.setSpacing(8)
+        btn_hbox.setContentsMargins(0, 0, 0, 0)
+        open_folder_btn.setFixedWidth(80)
+        del_btn.setFixedWidth(80)
+        btn_hbox.addWidget(open_folder_btn)
+        btn_hbox.addWidget(del_btn)
+
+        # 情報部に追加
+        info_vbox.addWidget(name_label)
+        info_vbox.addWidget(size_label)
+        info_vbox.addWidget(path_label)
+        info_vbox.addLayout(btn_hbox)
+        info_widget = QWidget()
+        info_widget.setLayout(info_vbox)
+        info_widget.setFixedWidth(180)
+
+        # 横並びレイアウト
+        hbox = QHBoxLayout()
+        hbox.setSpacing(8)
+        hbox.setContentsMargins(2, 2, 2, 2)
+        hbox.addWidget(thumb_btn)
+        hbox.addWidget(info_widget)
+
         file_widget = QWidget()
-        file_widget.setLayout(vbox)
+        file_widget.setLayout(hbox)
         row = idx // max_col
         col = idx % max_col
         grid.addWidget(file_widget, row, col)
