@@ -103,8 +103,20 @@ def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_c
         size_label.setStyleSheet("font-size:11px;color:#00ff99;max-width:180px;")
         size_label.setMaximumWidth(180)
         size_label.setWordWrap(True)
-        path_label = QLabel(f)
+        # 末尾2階層のパスを表示
+        folder_path = os.path.dirname(f)
+        folder_parts = folder_path.replace("\\", "/").rstrip("/").split("/")
+        if len(folder_parts) >= 2:
+            last2 = "/".join(folder_parts[-2:])
+        elif len(folder_parts) == 1:
+            last2 = folder_parts[0]
+        else:
+            last2 = folder_path
+        path_label = QLabel(last2)
         path_label.setStyleSheet("font-size:10px;color:#00ff99;max-width:180px;")
+        path_label.setWordWrap(True)
+        from PyQt5.QtCore import Qt
+        path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         # フォルダを開くボタン
         open_folder_btn = QPushButton("フォルダを開く")
         open_folder_btn.setStyleSheet("font-size:11px;color:#00ff99;border:1px solid #00ff99;border-radius:6px;")
@@ -187,6 +199,9 @@ def show_face_grouping_dialog(parent, groups, move_selected_files_to_folder_func
             # ファイルパスラベルを右クリックでエクスプローラーでフォルダを開く
             path_label = QLabel(f)
             path_label.setStyleSheet("font-size:10px;color:#00ff99;max-width:140px;")
+            path_label.setWordWrap(True)
+            from PyQt5 import QtCore
+            path_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
             cb = QCheckBox("選択")
             group_checkboxes.append((cb, f))
             del_btn = QPushButton("削除")
@@ -281,6 +296,9 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
             # ファイルパスラベルを右クリックでエクスプローラーでフォルダを開く
             path_label = QLabel(f)
             path_label.setStyleSheet("font-size:10px;color:#00ff99;max-width:140px;")
+            path_label.setWordWrap(True)
+            from PyQt5 import QtCore
+            path_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
             repair_btn = QPushButton("修復")
             repair_btn.setStyleSheet("font-size:11px;color:#00ffe7;border:2px solid #00ffe7;border-radius:8px;")
             repair_btn.clicked.connect(lambda _, path=f: run_mp4_repair(path))
