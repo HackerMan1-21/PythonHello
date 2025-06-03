@@ -283,11 +283,15 @@ class DuplicateFinderGUI(QWidget):
 
     def detectDuplicates(self):
         print("[DEBUG] detectDuplicates: start")
-        while not self.fileQueue.empty():
-            file = self.fileQueue.get()
+        while True:
+            try:
+                file = self.fileQueue.get_nowait()
+            except queue.Empty:
+                break
             print(f"[DEBUG] detectDuplicates: processing {file}")
             # ...ファイル処理コード...
             self.fileQueue.task_done()
+        self.fileQueue.join()  # 全てのtask_done()完了まで待つ
         print("[DEBUG] detectDuplicates: end")
 
     def runDetection(self):
@@ -477,10 +481,9 @@ class DuplicateFinderGUI(QWidget):
                     self.content_layout.addWidget(group_box)
                     # サムネイル生成を明示的にキューに追加
                     for file_path in group:
-                        if file_path not in self.thumb_widget_map:
-                            continue
                         ext = os.path.splitext(file_path)[1].lower()
                         is_video = ext in ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
+                        print(f"[DEBUG] thumb_queue.put: {file_path}")
                         self.thumb_queue.put((file_path, (180, 180), is_video, None))
                 except Exception as e:
                     print(f"[DEBUG] update_ui: group UI exception: {e}")

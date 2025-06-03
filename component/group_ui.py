@@ -63,6 +63,46 @@ def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_c
         fname = os.path.basename(f)
         name_label = QLabel(fname)
         name_label.setStyleSheet("font-size:12px;color:#00ffe7;font-weight:bold;max-width:180px;")
+        # ファイルサイズ取得
+        try:
+            size_bytes = os.path.getsize(f)
+            if size_bytes < 1024:
+                size_str = f"{size_bytes} B"
+            elif size_bytes < 1024 * 1024:
+                size_str = f"{size_bytes/1024:.2f} KB"
+            else:
+                size_str = f"{size_bytes/1024/1024:.2f} MB"
+        except Exception:
+            size_str = "?"
+        # 動画の長さ取得
+        ext = os.path.splitext(f)[1].lower()
+        video_exts = ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
+        duration_str = ""
+        if ext in video_exts:
+            try:
+                import cv2
+                cap = cv2.VideoCapture(f)
+                if cap.isOpened():
+                    frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+                    if fps > 0:
+                        seconds = int(frames / fps)
+                        m, s = divmod(seconds, 60)
+                        h, m = divmod(m, 60)
+                        if h > 0:
+                            duration_str = f" / {h}:{m:02d}:{s:02d}"
+                        else:
+                            duration_str = f" / {m}:{s:02d}"
+                    else:
+                        duration_str = ""
+                cap.release()
+            except Exception:
+                duration_str = ""
+        size_and_time = f"サイズ: {size_str}{duration_str}"
+        size_label = QLabel(size_and_time)
+        size_label.setStyleSheet("font-size:11px;color:#00ff99;max-width:180px;")
+        size_label.setMaximumWidth(180)
+        size_label.setWordWrap(True)
         path_label = QLabel(f)
         path_label.setStyleSheet("font-size:10px;color:#00ff99;max-width:180px;")
         # フォルダを開くボタン
@@ -88,6 +128,7 @@ def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_c
         vbox.setContentsMargins(2, 2, 2, 2)
         vbox.addWidget(thumb_btn)
         vbox.addWidget(name_label)
+        vbox.addWidget(size_label)  # ここでサイズ＋動画長ラベルを追加
         vbox.addWidget(path_label)
         vbox.addWidget(open_folder_btn)
         vbox.addWidget(del_btn)
