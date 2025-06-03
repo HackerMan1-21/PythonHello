@@ -27,18 +27,6 @@ from component.thumbnail.thumbnail_util import get_thumbnail_for_file, pil_image
 from PyQt5.QtCore import QTimer
 
 def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_cb, compare_cb, thumb_cache=None, defer_queue=None, thumb_widget_map=None, parent=None, elapsed_time=None, eta_time=None, remain_count=None):
-    # 統合ラベル用テキスト生成
-    status_parts = []
-    if elapsed_time is not None:
-        status_parts.append(f"経過時間: {elapsed_time}")
-    if eta_time is not None:
-        status_parts.append(f"予測終了時間: {eta_time}")
-    if remain_count is not None:
-        status_parts.append(f"残り: {remain_count}件")
-    status_text = '　'.join(status_parts)
-    status_label = QLabel(status_text)
-    status_label.setStyleSheet("font-size:13px;color:#00ffe7;font-weight:bold;margin-bottom:6px;")
-
     group_box = QGroupBox(f"重複グループ（残り: {len(group)}ファイル）")
     grid = QGridLayout()
     grid.setHorizontalSpacing(12)
@@ -150,13 +138,7 @@ def create_duplicate_group_ui(group, get_thumbnail_for_file, detail_cb, delete_c
         col = idx % max_col
         grid.addWidget(file_widget, row, col)
     group_box.setLayout(grid)
-    # --- ここで下部の残りラベルは統合ラベルに統合するため削除 ---
-    vbox_outer = QVBoxLayout()
-    vbox_outer.addWidget(status_label)
-    vbox_outer.addWidget(group_box)
-    container = QWidget()
-    container.setLayout(vbox_outer)
-    return container
+    return group_box
 
 def show_face_grouping_dialog(parent, groups, move_selected_files_to_folder_func, delete_cb=None, thumb_cache=None, defer_queue=None):
     print("DEBUG: show_face_grouping_dialog called", groups, thumb_cache, delete_cb)
