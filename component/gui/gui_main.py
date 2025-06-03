@@ -34,7 +34,7 @@ from PIL import Image
 import imagehash
 import hashlib
 from shutil import move as shutil_move
-from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QScrollArea, QProgressBar, QDialog, QGridLayout, QDialogButtonBox, QCheckBox, QProgressDialog, QGroupBox, QListView, QAbstractItemView, QStyledItemDelegate, QApplication, QStackedWidget)
+from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QScrollArea, QProgressBar, QDialog, QGridLayout, QDialogButtonBox, QCheckBox, QProgressDialog, QGroupBox, QListView, QAbstractItemView, QStyledItemDelegate, QApplication, QStackedWidget, QSizePolicy)
 from PyQt5.QtGui import QPixmap, QImage, QIcon
 from PyQt5.QtCore import Qt, QSize, QTimer, QAbstractListModel, QModelIndex, QVariant, pyqtSignal
 from queue import Queue
@@ -214,6 +214,12 @@ class DuplicateFinderGUI(QWidget):
         self.cancel_btn.clicked.connect(self.request_cancel)
         self.cancel_btn.setEnabled(False)
         layout.addWidget(self.cancel_btn)
+        # --- 結果のみ全画面ボタン ---
+        self.result_fullscreen_btn = QPushButton("結果のみ全画面")
+        self.result_fullscreen_btn.setStyleSheet("font-size:14px;color:#fff;background:#222;border:1px solid #00ffe7;border-radius:6px;padding:4px 8px;")
+        self.result_fullscreen_btn.setCheckable(True)
+        self.result_fullscreen_btn.toggled.connect(self.toggle_result_fullscreen)
+        btn_hbox.addWidget(self.result_fullscreen_btn)
         self.setLayout(layout)
         self.current_view_mode = 0  # 0:グリッド, 1:仮想化
         self.selected_paths = set()
@@ -591,3 +597,22 @@ class DuplicateFinderGUI(QWidget):
                         w.deleteLater()
         self.group_widgets = []
         self.thumb_widget_map = {}
+
+    def toggle_result_fullscreen(self, checked):
+        # グループ表示エリア(scroll_area)以外を隠す/戻す
+        widgets = [
+            self.folder_label, self.select_btn, self.status_label, self.progress,
+            self.toggle_view_btn, self.delete_btn, self.reload_btn, self.cancel_btn
+        ]
+        for w in widgets:
+            w.setVisible(not checked)
+        self.result_fullscreen_btn.setText("元に戻す" if checked else "結果のみ全画面")
+        if checked:
+            # 全画面表示時はグループ表示エリアを拡大
+            self.scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.scroll_area.setMinimumSize(800, 600)
+        else:
+            # 通常時のサイズポリシーに戻す
+            self.scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.scroll_area.setMinimumSize(0, 0)
+        self.adjustSize()
