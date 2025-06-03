@@ -34,7 +34,7 @@ from PIL import Image
 import imagehash
 import hashlib
 from shutil import move as shutil_move
-from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QScrollArea, QProgressBar, QDialog, QGridLayout, QDialogButtonBox, QCheckBox, QProgressDialog, QGroupBox, QListView, QAbstractItemView, QStyledItemDelegate, QApplication, QStackedWidget, QSizePolicy)
+from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QScrollArea, QProgressBar, QDialog, QGridLayout, QDialogButtonBox, QCheckBox, QProgressDialog, QGroupBox, QListView, QAbstractItemView, QStyledItemDelegate, QApplication, QStackedWidget, QSizePolicy, QComboBox)
 from PyQt5.QtGui import QPixmap, QImage, QIcon
 from PyQt5.QtCore import Qt, QSize, QTimer, QAbstractListModel, QModelIndex, QVariant, pyqtSignal
 from queue import Queue
@@ -61,13 +61,17 @@ print("DEBUG: gui_main.py loaded from", __file__)
 # --- ここにDuplicateFinderGUIクラス本体を移植 ---
 
 class DuplicateFinderGUI(QWidget):
-    update_ui_signal = pyqtSignal(object, object, object, object, object)  # (duplicates, folder, elapsed_time, eta_time, remain_count)
+    update_ui_signal = pyqtSignal(object, object, object, object, object)
 
     def __init__(self, parent=None):
         super(DuplicateFinderGUI, self).__init__(parent)
+        # --- ページング関連初期化（ここで必ず初期値をセット）---
+        self.current_page = 0
+        self.groups_per_page = 50  # ← ここをinit_ui()より前に移動
+        self.duplicate_groups = []
         self.thumb_queue = Queue()
         self.thumb_cache = None
-        self.thumb_widget_map = {}  # ファイルパス→サムネイルボタン
+        self.thumb_widget_map = {}
         self.thumb_workers = start_thumbnail_workers(self.thumb_queue, self.on_thumb_update, cache=None)
         self.init_ui()
         self.worker = None  # スレッド初期化
@@ -80,6 +84,10 @@ class DuplicateFinderGUI(QWidget):
         self.auto_reload_timer.setInterval(3000)
         self.auto_reload_timer.timeout.connect(self.check_folder_update)
         self.update_ui_signal.connect(self.update_ui)
+        # --- ページング関連初期化 ---
+        self.current_page = 0
+        self.groups_per_page = 50
+        self.duplicate_groups = []
 
     def init_ui(self):
         self.setWindowTitle("Duplicate Finder")
@@ -220,6 +228,25 @@ class DuplicateFinderGUI(QWidget):
         self.result_fullscreen_btn.setCheckable(True)
         self.result_fullscreen_btn.toggled.connect(self.toggle_result_fullscreen)
         btn_hbox.addWidget(self.result_fullscreen_btn)
+        # --- ページングUI ---
+        self.page_hbox = QHBoxLayout()
+        self.prev_page_btn = QPushButton("前へ")
+        self.next_page_btn = QPushButton("次へ")
+        self.page_label = QLabel("")
+        self.prev_page_btn.clicked.connect(self.prev_page)
+        self.next_page_btn.clicked.connect(self.next_page)
+        self.groups_per_page_combo = QComboBox()
+        self.groups_per_page_combo.addItems(["20", "50", "100"])
+        self.groups_per_page_combo.setCurrentText(str(self.groups_per_page))
+        self.groups_per_page_combo.setFixedWidth(60)
+        self.groups_per_page_combo.currentTextChanged.connect(self.on_groups_per_page_changed)
+        self.page_hbox.addWidget(self.prev_page_btn)
+        self.page_hbox.addWidget(self.page_label)
+        self.page_hbox.addWidget(self.next_page_btn)
+        self.page_hbox.addWidget(QLabel("/ ページあたり"))
+        self.page_hbox.addWidget(self.groups_per_page_combo)
+        self.page_hbox.addWidget(QLabel("件"))
+        layout.addLayout(self.page_hbox)
         self.setLayout(layout)
         self.current_view_mode = 0  # 0:グリッド, 1:仮想化
         self.selected_paths = set()
@@ -436,67 +463,84 @@ class DuplicateFinderGUI(QWidget):
         status_text = '　'.join(status_parts)
         self.status_label.setText(status_text)
         try:
-            self.clear_content()
-            if not duplicates:
-                self.content_layout.addWidget(QLabel("重複ファイルは見つかりませんでした"))
-                print("DEBUG: find_duplicates end (no duplicates)")
-                return
-            self.group_widgets = []
-            self.thumb_widget_map = {}
-            self.thumb_cache = ThumbnailCache(folder)
-            self.stacked.setCurrentIndex(0)
-            print("DEBUG: stacked.setCurrentIndex(0) called")
-            for i, group in enumerate(duplicates):
-                is_error_group = False
-                if i == len(duplicates) - 1:
-                    if isinstance(group, list) and len(group) > 0:
-                        try:
-                            is_error_group = all((get_thumbnail_for_file(f, (180, 180), cache=self.thumb_cache) is None) for f in group)
-                        except Exception as e:
-                            print(f"[DEBUG] update_ui: error group check exception: {e}")
-                            is_error_group = False
-                try:
-                    if is_error_group:
-                        from component.group_ui import create_error_group_ui
-                        group_box = create_error_group_ui(
-                            group,
-                            get_thumbnail_for_file,
-                            show_detail_dialog,
-                            self.delete_single_file,
-                            thumb_cache=self.thumb_cache,
-                            defer_queue=self.thumb_queue,
-                            thumb_widget_map=self.thumb_widget_map
-                        )
-                        group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #ff4444; border-radius: 12px; padding: 8px;")
-                    else:
-                        group_box = create_duplicate_group_ui(
-                            group,
-                            get_thumbnail_for_file,
-                            show_detail_dialog,
-                            self.delete_single_file,
-                            show_compare_dialog,
-                            thumb_cache=self.thumb_cache,
-                            defer_queue=self.thumb_queue,
-                            thumb_widget_map=self.thumb_widget_map,
-                            parent=self,
-                            elapsed_time=elapsed_time,
-                            eta_time=eta_time,
-                            remain_count=remain_count
-                        )
-                        group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #00ffe7; border-radius: 12px; padding: 8px;")
-                    self.content_layout.addWidget(group_box)
-                    # サムネイル生成を明示的にキューに追加
-                    for file_path in group:
-                        ext = os.path.splitext(file_path)[1].lower()
-                        is_video = ext in ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
-                        print(f"[DEBUG] thumb_queue.put: {file_path}")
-                        self.thumb_queue.put((file_path, (180, 180), is_video, None))
-                except Exception as e:
-                    print(f"[DEBUG] update_ui: group UI exception: {e}")
-            self.content_widget.adjustSize()
-            print("DEBUG: find_duplicates end")
+            self.duplicate_groups = duplicates or []
+            self.current_page = 0
+            self.show_current_page(elapsed_time, eta_time, remain_count)
         except Exception as e:
             print(f"[DEBUG] update_ui: outer exception: {e}")
+
+    def show_current_page(self, elapsed_time=None, eta_time=None, remain_count=None):
+        self.clear_content()
+        start = self.current_page * self.groups_per_page
+        end = start + self.groups_per_page
+        page_groups = self.duplicate_groups[start:end]
+        if not page_groups:
+            self.content_layout.addWidget(QLabel("重複ファイルは見つかりませんでした"))
+            return
+        self.group_widgets = []
+        self.thumb_widget_map = {}
+        for i, group in enumerate(page_groups):
+            global_index = start + i
+            is_error_group = False
+            if global_index == len(self.duplicate_groups) - 1:
+                if isinstance(group, list) and len(group) > 0:
+                    try:
+                        is_error_group = all((get_thumbnail_for_file(f, (180, 180), cache=self.thumb_cache) is None) for f in group)
+                    except Exception:
+                        is_error_group = False
+            try:
+                if is_error_group:
+                    from component.group_ui import create_error_group_ui
+                    group_box = create_error_group_ui(
+                        group,
+                        get_thumbnail_for_file,
+                        show_detail_dialog,
+                        self.delete_single_file,
+                        thumb_cache=self.thumb_cache,
+                        defer_queue=self.thumb_queue,
+                        thumb_widget_map=self.thumb_widget_map
+                    )
+                    group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #ff4444; border-radius: 12px; padding: 8px;")
+                else:
+                    group_box = create_duplicate_group_ui(
+                        group,
+                        get_thumbnail_for_file,
+                        show_detail_dialog,
+                        self.delete_single_file,
+                        show_compare_dialog,
+                        thumb_cache=self.thumb_cache,
+                        defer_queue=self.thumb_queue,
+                        thumb_widget_map=self.thumb_widget_map,
+                        parent=self,
+                        elapsed_time=elapsed_time,
+                        eta_time=eta_time,
+                        remain_count=remain_count
+                    )
+                    group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #00ffe7; border-radius: 12px; padding: 8px;")
+                self.content_layout.addWidget(group_box)
+                for file_path in group:
+                    ext = os.path.splitext(file_path)[1].lower()
+                    is_video = ext in ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
+                    self.thumb_queue.put((file_path, (180, 180), is_video, None))
+            except Exception as e:
+                print(f"[DEBUG] show_current_page: group UI exception: {e}")
+        # ページラベル・ボタン状態
+        total_pages = max(1, (len(self.duplicate_groups) + self.groups_per_page - 1) // self.groups_per_page)
+        self.page_label.setText(f"{self.current_page + 1} / {total_pages}")
+        self.prev_page_btn.setEnabled(self.current_page > 0)
+        self.next_page_btn.setEnabled((self.current_page + 1) * self.groups_per_page < len(self.duplicate_groups))
+        self.content_widget.adjustSize()
+
+    def prev_page(self):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.show_current_page()
+
+    def next_page(self):
+        total_pages = max(1, (len(self.duplicate_groups) + self.groups_per_page - 1) // self.groups_per_page)
+        if self.current_page + 1 < total_pages:
+            self.current_page += 1
+            self.show_current_page()
 
     def check_folder_update(self):
         # フォルダ内のファイル変化を監視・自動更新
@@ -616,3 +660,11 @@ class DuplicateFinderGUI(QWidget):
             self.scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             self.scroll_area.setMinimumSize(0, 0)
         self.adjustSize()
+
+    def on_groups_per_page_changed(self, text):
+        try:
+            self.groups_per_page = int(text)
+        except Exception:
+            self.groups_per_page = 50
+        self.current_page = 0
+        self.show_current_page()
