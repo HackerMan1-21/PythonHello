@@ -491,15 +491,32 @@ class DuplicateFinderGUI(QWidget):
             try:
                 if is_error_group:
                     from component.group_ui import create_error_group_ui
-                    group_box = create_error_group_ui(
-                        group,
-                        get_thumbnail_for_file,
-                        show_detail_dialog,
-                        self.delete_single_file,
-                        thumb_cache=self.thumb_cache,
-                        defer_queue=self.thumb_queue,
-                        thumb_widget_map=self.thumb_widget_map
-                    )
+                    try:
+                        group_box = create_error_group_ui(
+                            group,
+                            get_thumbnail_for_file,
+                            show_detail_dialog,
+                            self.delete_single_file,
+                            thumb_cache=self.thumb_cache,
+                            defer_queue=self.thumb_queue,
+                            thumb_widget_map=self.thumb_widget_map,
+                            # 必要なら**kwargsで渡す
+                            elapsed_time=elapsed_time,
+                            eta_time=eta_time,
+                            remain_count=remain_count
+                        )
+                    except TypeError as e:
+                        print(f"[DEBUG] create_error_group_ui TypeError: {e}")
+                        # 引数が合わない場合は情報部なしで呼ぶ
+                        group_box = create_error_group_ui(
+                            group,
+                            get_thumbnail_for_file,
+                            show_detail_dialog,
+                            self.delete_single_file,
+                            thumb_cache=self.thumb_cache,
+                            defer_queue=self.thumb_queue,
+                            thumb_widget_map=self.thumb_widget_map
+                        )
                     group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #ff4444; border-radius: 12px; padding: 8px;")
                 else:
                     group_box = create_duplicate_group_ui(

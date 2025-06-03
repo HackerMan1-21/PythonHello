@@ -355,27 +355,65 @@ def create_error_group_ui(error_files, get_thumbnail_for_file, detail_cb, delete
             thumb_widget_map[norm_path] = thumb_btn
         fname = os.path.basename(f)
         name_label = QLabel(fname)
-        # name_label.setAlignment(Qt.AlignCenter)  # Qt.AlignCenter未定義エラー回避のためコメントアウト
         name_label.setStyleSheet("font-size:12px;color:#ff4444;font-weight:bold;max-width:180px;")
         name_label.setWordWrap(True)
-        # ファイルパスラベルを右クリックでエクスプローラーでフォルダを開く（QLabelはmousePressEventの割り当てが困難なため、右クリックメニューで対応）
-        path_label = QLabel(f)
-        # path_label.setAlignment(Qt.AlignCenter)  # Qt.AlignCenter未定義エラー回避のためコメントアウト
-        path_label.setWordWrap(True)
+        # パスラベル（2階層表示）
+        folder_path = os.path.dirname(f)
+        folder_parts = folder_path.replace("\\", "/").rstrip("/").split("/")
+        if len(folder_parts) >= 2:
+            last2 = "/".join(folder_parts[-2:])
+        elif len(folder_parts) == 1:
+            last2 = folder_parts[0]
+        else:
+            last2 = folder_path
+        path_label = QLabel(last2)
         path_label.setStyleSheet("font-size:10px;color:#ffb300;max-width:180px;")
+        path_label.setMaximumWidth(180)
+        path_label.setWordWrap(True)
+        path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # フォルダを開くボタン
+        open_folder_btn = QPushButton("フォルダを開く")
+        open_folder_btn.setStyleSheet("font-size:11px;color:#ffb300;border:1px solid #ffb300;border-radius:6px;")
+        def open_folder(path):
+            import os, subprocess, sys
+            folder = os.path.dirname(path)
+            if os.path.exists(folder):
+                if sys.platform.startswith('win'):
+                    os.startfile(folder)
+                elif sys.platform.startswith('darwin'):
+                    subprocess.Popen(['open', folder])
+                else:
+                    subprocess.Popen(['xdg-open', folder])
+        open_folder_btn.clicked.connect(lambda _, path=f: open_folder(path))
         del_btn = QPushButton("削除")
         del_btn.setStyleSheet("font-size:12px;color:#ff00c8;max-width:180px;")
-        del_btn.setFixedWidth(180)
+        del_btn.setFixedWidth(80)
         del_btn.clicked.connect(lambda _, path=f: delete_cb(path))
-        vbox = QVBoxLayout()
-        vbox.setSpacing(2)
-        vbox.setContentsMargins(2, 2, 2, 2)
-        vbox.addWidget(thumb_btn)
-        vbox.addWidget(name_label)
-        vbox.addWidget(path_label)
-        vbox.addWidget(del_btn)
+        # ボタン横並び
+        btn_hbox = QHBoxLayout()
+        btn_hbox.setSpacing(8)
+        btn_hbox.setContentsMargins(0, 0, 0, 0)
+        open_folder_btn.setFixedWidth(80)
+        btn_hbox.addWidget(open_folder_btn)
+        btn_hbox.addWidget(del_btn)
+        # 情報部
+        info_vbox = QVBoxLayout()
+        info_vbox.setSpacing(4)
+        info_vbox.setContentsMargins(0, 0, 0, 0)
+        info_vbox.addWidget(name_label)
+        info_vbox.addWidget(path_label)
+        info_vbox.addLayout(btn_hbox)
+        info_widget = QWidget()
+        info_widget.setLayout(info_vbox)
+        info_widget.setFixedWidth(180)
+        # 横並びレイアウト
+        hbox = QHBoxLayout()
+        hbox.setSpacing(8)
+        hbox.setContentsMargins(2, 2, 2, 2)
+        hbox.addWidget(thumb_btn)
+        hbox.addWidget(info_widget)
         file_widget = QWidget()
-        file_widget.setLayout(vbox)
+        file_widget.setLayout(hbox)
         row = idx // max_col
         col = idx % max_col
         grid.addWidget(file_widget, row, col)
