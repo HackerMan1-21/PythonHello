@@ -87,6 +87,21 @@ if __name__ == "__main__":
             mainWin = DuplicateFinderGUI()
             print("[main] DuplicateFinderGUI生成済み")
             logging.info("[main] DuplicateFinderGUI生成済み")
+            # --- サムネイルワーカーのセットアップ ---
+            import queue
+            from component.thumbnail.thumbnail_util import start_thumbnail_workers, load_thumb_cache
+            mainWin.thumb_queue = queue.Queue()
+            mainWin.thumb_cache = load_thumb_cache()
+            def on_thumbnail_ready(path, pil_img):
+                QTimer.singleShot(0, lambda: mainWin.update_thumbnail_ui(path, pil_img) if hasattr(mainWin, 'update_thumbnail_ui') else None)
+            mainWin.thumb_workers = start_thumbnail_workers(mainWin.thumb_queue, on_thumbnail_ready, cache=mainWin.thumb_cache, num_workers=4)
+            # --- 終了時にワーカーを安全に停止 ---
+            def _cleanup_workers():
+                for _ in mainWin.thumb_workers:
+                    mainWin.thumb_queue.put(None)
+                for w in mainWin.thumb_workers:
+                    w.join()
+            app.aboutToQuit.connect(_cleanup_workers)
             try:
                 mainWin.show()
                 print("[main] show()呼び出し")

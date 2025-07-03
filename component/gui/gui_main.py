@@ -61,6 +61,33 @@ print("DEBUG: gui_main.py loaded from", __file__)
 # --- ここにDuplicateFinderGUIクラス本体を移植 ---
 
 class DuplicateFinderGUI(QWidget):
+    def update_thumbnail_ui(self, file_path: str, pil_image):
+        """
+        サムネイルワーカーからのUI更新要求を受けて、該当ファイルのサムネイルボタン等のUI部品を更新する。
+        file_path: サムネイル対象ファイルの絶対パス
+        pil_image: PIL.Image.Image オブジェクト（Noneの場合は更新しない）
+        """
+        import os
+        from PyQt5.QtCore import QTimer
+        norm_path = os.path.abspath(os.path.normpath(file_path))
+        btn = self.thumb_widget_map.get(norm_path)
+        if btn is None:
+            print(f"[update_thumbnail_ui] No widget for {norm_path}")
+            return
+        if pil_image is None:
+            print(f"[update_thumbnail_ui] No image for {norm_path}")
+            return
+        def do_update():
+            try:
+                from component.thumbnail.thumbnail_util import pil_image_to_qpixmap
+                pix = pil_image_to_qpixmap(pil_image)
+                btn.setIcon(QIcon(pix))
+                btn.setIconSize(QSize(180, 180))
+                btn.setText("")
+                btn.repaint()
+            except Exception as e:
+                print(f"[update_thumbnail_ui] Exception: {e}")
+        QTimer.singleShot(0, do_update)
     update_ui_signal = pyqtSignal(object, object, object, object, object)
 
     def __init__(self, parent=None):
@@ -489,43 +516,40 @@ class DuplicateFinderGUI(QWidget):
                     except Exception:
                         is_error_group = False
             try:
+                from component.group_ui import create_error_group_ui
+                # 型安全な引数セット: 必要な引数のみ渡す
+                # thumb_cacheだけは型安全に渡す（ThumbnailCache型のみ渡す）
+                group_ui_kwargs = dict(
+                    thumb_cache=self.thumb_cache if isinstance(self.thumb_cache, ThumbnailCache) else None,
+                    defer_queue=self.thumb_queue,
+                    thumb_widget_map=self.thumb_widget_map,
+                )
+                # 追加情報が必要な場合のみ渡す
+                if elapsed_time is not None:
+                    group_ui_kwargs['elapsed_time'] = elapsed_time
+                if eta_time is not None:
+                    group_ui_kwargs['eta_time'] = eta_time
+                if remain_count is not None:
+                    group_ui_kwargs['remain_count'] = remain_count
+
                 if is_error_group:
-                    from component.group_ui import create_error_group_ui
-                    try:
-                        group_box = create_error_group_ui(
-                            group,
-                            get_thumbnail_for_file,
-                            show_detail_dialog,
-                            self.delete_single_file,
-                            thumb_cache=self.thumb_cache,
-                            defer_queue=self.thumb_queue,
-                            thumb_widget_map=self.thumb_widget_map,
-                            # 必要なら**kwargsで渡す
-                            elapsed_time=elapsed_time,
-                            eta_time=eta_time,
-                            remain_count=remain_count
-                        )
-                    except TypeError as e:
-                        print(f"[DEBUG] create_error_group_ui TypeError: {e}")
-                        # 引数が合わない場合は情報部なしで呼ぶ
-                        group_box = create_error_group_ui(
-                            group,
-                            get_thumbnail_for_file,
-                            show_detail_dialog,
-                            self.delete_single_file,
-                            thumb_cache=self.thumb_cache,
-                            defer_queue=self.thumb_queue,
-                            thumb_widget_map=self.thumb_widget_map
-                        )
+                    group_box = create_error_group_ui(
+                        group,
+                        get_thumbnail_for_file,
+                        show_detail_dialog,
+                        self.delete_single_file,
+                        **group_ui_kwargs
+                    )
                     group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #ff4444; border-radius: 12px; padding: 8px;")
                 else:
+                    # thumb_cacheだけ明示的に渡す（他は**group_ui_kwargs）
                     group_box = create_duplicate_group_ui(
                         group,
                         get_thumbnail_for_file,
                         show_detail_dialog,
                         self.delete_single_file,
                         show_compare_dialog,
-                        thumb_cache=self.thumb_cache,
+                        thumb_cache=self.thumb_cache if isinstance(self.thumb_cache, ThumbnailCache) else None,
                         defer_queue=self.thumb_queue,
                         thumb_widget_map=self.thumb_widget_map,
                         parent=self,
