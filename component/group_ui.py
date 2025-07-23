@@ -1,3 +1,70 @@
+# --- 2. 並列処理の最適化: CPUコア数に応じてmax_workersを自動設定 ---
+import concurrent.futures
+import multiprocessing
+
+def get_optimal_workers():
+    try:
+        return max(2, min(16, multiprocessing.cpu_count()))
+    except Exception:
+        return 4
+
+def group_by_phash_parallel(files, phash_func, chunksize=32):
+    max_workers = get_optimal_workers()
+    # 並列化対象関数はトップレベルで定義すること
+    def _phash_worker(filelist):
+        return [(f, phash_func(f)) for f in filelist]
+    # チャンク分割
+    chunks = [files[i:i+chunksize] for i in range(0, len(files), chunksize)]
+    results = []
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futs = [executor.submit(_phash_worker, chunk) for chunk in chunks]
+        for fut in concurrent.futures.as_completed(futs):
+            try:
+                results.extend(fut.result())
+            except Exception as e:
+                print(f"[WARN] 並列pHash失敗: {e}")
+    return results
+import atexit
+from PyQt5.QtWidgets import QApplication
+def _save_thumb_cache_on_exit():
+    # サムネイルキャッシュ保存処理（必要に応じて修正）
+    try:
+        from component.thumbnail.thumbnail_util import ThumbnailCache
+        # ここではグローバルなサムネイルキャッシュを保存する例
+        if hasattr(QApplication.instance(), 'thumb_cache'):
+            thumb_cache = QApplication.instance().thumb_cache
+            if isinstance(thumb_cache, ThumbnailCache):
+                thumb_cache.save_to_disk()  # 必要に応じて実装
+    except Exception as e:
+        print(f"[WARN] サムネイルキャッシュ保存失敗: {e}")
+
+try:
+    app = QApplication.instance()
+    if app is not None:
+        app.aboutToQuit.connect(_save_thumb_cache_on_exit)
+        # --- 5. サムネイルキャッシュの定期自動保存タイマー ---
+        try:
+            from PyQt5.QtCore import QTimer
+            def _periodic_thumb_cache_save():
+                try:
+                    if hasattr(app, 'thumb_cache'):
+                        thumb_cache = app.thumb_cache
+                        from component.thumbnail.thumbnail_util import ThumbnailCache
+                        if isinstance(thumb_cache, ThumbnailCache):
+                            thumb_cache.save_to_disk()
+                except Exception as e:
+                    print(f"[WARN] サムネイルキャッシュ定期保存失敗: {e}")
+            timer = QTimer()
+            timer.setInterval(60000)  # 60秒ごと
+            timer.timeout.connect(_periodic_thumb_cache_save)
+            timer.start()
+            app._thumb_cache_autosave_timer = timer  # GC防止
+        except Exception as e:
+            print(f"[WARN] サムネイルキャッシュ自動保存タイマー起動失敗: {e}")
+except Exception:
+    # CLIやテスト時は無視
+    pass
+atexit.register(_save_thumb_cache_on_exit)
 """
 group_ui.py
 重複グループ・顔グループ・壊れ動画グループなどのUI部品生成ユーティリティ。
@@ -15,8 +82,13 @@ print("DEBUG: group_ui.py loaded from", __file__)
 
 # component/group_ui.py
 # グループUI部品生成（重複グループ・顔グループ・壊れ動画グループなど）
-from PyQt5.QtWidgets import QGroupBox, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QWidget, QCheckBox, QDialog, QDialogButtonBox, QMessageBox, QFileDialog, QGridLayout
+from PyQt5.QtWidgets import QGroupBox, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QWidget, QCheckBox, QDialog, QDialogButtonBox, QMessageBox, QFileDialog, QGridLayout, QProgressDialog
 from PyQt5.QtCore import QSize, Qt
+try:
+    from PyQt5.QtCore import Qt as _Qt
+    _WINDOW_MODAL = _Qt.WindowModality.WindowModal
+except Exception:
+    _WINDOW_MODAL = None  # fallback to None if WindowModal is not available
 from PyQt5.QtWidgets import QMenu
 from PyQt5 import QtCore
 from PyQt5.QtGui import QPixmap, QIcon
@@ -61,6 +133,9 @@ def create_duplicate_group_ui(
     thumb_btn_map = {}
     size_label_map = {}
     threads = []  # QThread参照保持用
+    workers = []  # Worker参照も保持
+    group_box.threads = threads  # QGroupBoxの属性として保持
+    group_box.workers = workers
     # cache_dictは上で定義済み
     for idx, f in enumerate(group):
         # cache_dictは関数先頭で定義済み
@@ -149,14 +224,13 @@ def create_duplicate_group_ui(
                 if pil_thumb is not None:
                     btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
                 label.setText(f"{info_tuple[0]}{info_tuple[1]}")
-                thread.quit()
-                thread.wait()
-                thread.deleteLater()
+                thread.quit()  # quitのみ。wait/deleteLaterは終了時にまとめて
                 worker.deleteLater()
             worker.finished.connect(on_finished)
             thread.started.connect(worker.run)
             thread.start()
             threads.append(thread)
+            workers.append(worker)
         else:
             pil_thumb = cache_dict[f]
             btn = thumb_btn_map[f]
@@ -174,10 +248,14 @@ def create_duplicate_group_ui(
     parent_dialog = parent
     if parent_dialog is not None and hasattr(parent_dialog, 'finished'):
         def _cleanup_threads():
-            for t in threads:
+            for t in group_box.threads:
                 if t.isRunning():
                     t.quit()
-                    t.wait()
+            for t in group_box.threads:
+                t.wait()
+                t.deleteLater()
+            for w in getattr(group_box, 'workers', []):
+                w.deleteLater()
         parent_dialog.finished.connect(_cleanup_threads)
     return group_box
 
@@ -197,6 +275,9 @@ def show_face_grouping_dialog(parent, groups, move_selected_files_to_folder_func
     thumb_btn_map = {}
     size_label_map = {}
     threads = []  # QThread参照保持用
+    workers = []  # Worker参照も保持
+    dlg.threads = threads  # ダイアログの属性として保持
+    dlg.workers = workers
     # cache_dictを必ず定義
     if isinstance(thumb_cache, ThumbnailCache):
         cache_dict = thumb_cache.cache
@@ -256,14 +337,13 @@ def show_face_grouping_dialog(parent, groups, move_selected_files_to_folder_func
                     if pil_thumb is not None:
                         btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
                     label.setText(f"{info_tuple[0]}{info_tuple[1]}")
-                    thread.quit()
-                    thread.wait()
-                    thread.deleteLater()
+                    thread.quit()  # quitのみ。wait/deleteLaterはダイアログ終了時にまとめて
                     worker.deleteLater()
                 worker.finished.connect(on_finished)
                 thread.started.connect(worker.run)
                 thread.start()
                 threads.append(thread)
+                workers.append(worker)
             else:
                 pil_thumb = cache_dict[f]
                 btn = thumb_btn_map[f]
@@ -283,12 +363,22 @@ def show_face_grouping_dialog(parent, groups, move_selected_files_to_folder_func
     vbox.addWidget(btns)
     dlg.setLayout(vbox)
     def _cleanup_threads():
-        for t in threads:
+        # すべてのスレッドにquitを投げる
+        for t in dlg.threads:
             if t.isRunning():
                 t.quit()
-                t.wait()
+        # すべてのスレッドが終了するまでwait
+        for t in dlg.threads:
+            t.wait()
+            t.deleteLater()
+        # ワーカーもdeleteLater
+        for w in getattr(dlg, 'workers', []):
+            w.deleteLater()
     dlg.finished.connect(_cleanup_threads)
     dlg.exec_()
+    # 念のためダイアログ終了後も全スレッドwait
+    for t in dlg.threads:
+        t.wait()
 
 def move_selected_files_to_folder(checkboxes, parent):
     print("DEBUG: move_selected_files_to_folder called", checkboxes)
@@ -326,22 +416,56 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
     thumb_btn_map = {}
     size_label_map = {}
     threads = []  # QThread参照保持用
-    def update_page(groups, group_checkboxes, delete_cb):
-        # cache_dictをupdate_page内でも参照できるように
+    workers = []  # Worker参照も保持
+    dlg.threads = threads  # ダイアログの属性として保持
+    dlg.workers = workers
+    import time
+    from PyQt5.QtWidgets import QApplication
+    def _cleanup_current_threads():
+        # すべてのワーカーにキャンセルを通知
+        for w in dlg.workers:
+            if hasattr(w, 'cancel'):
+                w.cancel()
+        # すべてのスレッドにquitを投げる
+        for t in dlg.threads:
+            if t.isRunning():
+                t.quit()
+        # すべてのスレッドが終了するまでwaitし、deleteLater
+        for t in dlg.threads:
+            t.wait()
+            t.deleteLater()
+        # ワーカーもdeleteLater
+        for w in dlg.workers:
+            w.deleteLater()
+        dlg.threads.clear()
+        dlg.workers.clear()
+
+    def update_page(groups, group_checkboxes, delete_cb, progress_dialog=None):
+        # 1. まずスレッド/ワーカーの完全クリーンアップを同期的に行う
+        _cleanup_current_threads()
+        # 2. その後で新規スレッド/ワーカー生成
         if isinstance(thumb_cache, ThumbnailCache):
             cache_dict = thumb_cache.cache
         elif isinstance(thumb_cache, dict):
             cache_dict = thumb_cache
         else:
             cache_dict = {}
-        while vbox.count() > 0:
-            item = vbox.takeAt(0)
-            if item is not None:
-                w = item.widget() if hasattr(item, 'widget') else None
-                if w is not None:
-                    w.deleteLater()
+        # ここだけUIロック（ちらつき最小化）
+        dlg.setUpdatesEnabled(False)
+        try:
+            while vbox.count() > 0:
+                item = vbox.takeAt(0)
+                if item is not None:
+                    w = item.widget() if hasattr(item, 'widget') else None
+                    if w is not None:
+                        w.deleteLater()
+        finally:
+            dlg.setUpdatesEnabled(True)
+        # ここからはUI有効化したまま新規ウィジェット追加
         start = current_page[0] * page_size
         end = min(start + page_size, len(groups))
+        max_concurrent_thumbnails = 4
+        active_threads = []
         for group in groups[start:end]:
             group_box = QGroupBox(f"壊れ動画グループ（残り: {len(group)}ファイル）")
             grid = QGridLayout()
@@ -394,21 +518,27 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
                 thumb_btn_map[f] = thumb_btn
                 size_label_map[f] = size_label
                 if (f not in cache_dict) or (f not in video_info_cache):
+                    while len(active_threads) >= max_concurrent_thumbnails:
+                        active_threads = [t for t in active_threads if t.isRunning()]
+                        if len(active_threads) >= max_concurrent_thumbnails:
+                            QApplication.processEvents()
+                            import time
+                            time.sleep(0.01)
                     thread = QThread()
                     worker = ThumbInfoWorker(f, cache_dict, video_info_cache, (140, 140), get_thumbnail_for_file)
                     worker.moveToThread(thread)
                     def on_finished(path, pil_thumb, info_tuple, btn=thumb_btn, label=size_label, thread=thread, worker=worker):
                         if pil_thumb is not None:
-                            btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
+                            QTimer.singleShot(0, lambda: btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb))))
                         label.setText(f"{info_tuple[0]}{info_tuple[1]}")
                         thread.quit()
-                        thread.wait()
-                        thread.deleteLater()
                         worker.deleteLater()
                     worker.finished.connect(on_finished)
                     thread.started.connect(worker.run)
                     thread.start()
                     threads.append(thread)
+                    workers.append(worker)
+                    active_threads.append(thread)
                 else:
                     pil_thumb = cache_dict[f]
                     btn = thumb_btn_map[f]
@@ -424,7 +554,6 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
                     grid.addWidget(spacer, last_row, col)
             group_box.setLayout(grid)
             vbox.addWidget(group_box)
-        # ページ送りボタン
         nav_hbox = QHBoxLayout()
         prev_btn = QPushButton("前のページ")
         next_btn = QPushButton("次のページ")
@@ -433,19 +562,73 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
         next_btn.setEnabled(current_page[0] < total_pages-1)
         def goto_prev():
             if current_page[0] > 0:
-                current_page[0] -= 1
-                update_page(groups, group_checkboxes, delete_cb)
+                progress = QProgressDialog("ページを読み込み中...", "キャンセル", 0, 100, dlg)
+                if _WINDOW_MODAL is not None:
+                    progress.setWindowModality(_WINDOW_MODAL)
+                progress.setMinimumDuration(500)
+                progress.setValue(0)
+                canceled = [False]
+                def on_cancel():
+                    canceled[0] = True
+                    # 全ワーカーにcancel通知
+                    for w in dlg.workers:
+                        if hasattr(w, 'cancel'):
+                            w.cancel()
+                progress.canceled.connect(on_cancel)
+                def async_update():
+                    try:
+                        if canceled[0]:
+                            return
+                        current_page[0] -= 1
+                        update_page(groups, group_checkboxes, delete_cb, progress)
+                        if not canceled[0]:
+                            progress.setValue(100)
+                    except Exception as e:
+                        print(f"ページ更新エラー: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        progress.cancel()
+                    finally:
+                        if progress and not progress.wasCanceled():
+                            progress.close()
+                QTimer.singleShot(100, async_update)
         def goto_next():
             if current_page[0] < total_pages-1:
-                current_page[0] += 1
-                update_page(groups, group_checkboxes, delete_cb)
+                progress = QProgressDialog("ページを読み込み中...", "キャンセル", 0, 100, dlg)
+                if _WINDOW_MODAL is not None:
+                    progress.setWindowModality(_WINDOW_MODAL)
+                progress.setMinimumDuration(500)
+                progress.setValue(0)
+                canceled = [False]
+                def on_cancel():
+                    canceled[0] = True
+                    for w in dlg.workers:
+                        if hasattr(w, 'cancel'):
+                            w.cancel()
+                progress.canceled.connect(on_cancel)
+                def async_update():
+                    try:
+                        if canceled[0]:
+                            return
+                        current_page[0] += 1
+                        update_page(groups, group_checkboxes, delete_cb, progress)
+                        if not canceled[0]:
+                            progress.setValue(100)
+                    except Exception as e:
+                        print(f"ページ更新エラー: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        progress.cancel()
+                    finally:
+                        if progress and not progress.wasCanceled():
+                            progress.close()
+                QTimer.singleShot(100, async_update)
         prev_btn.clicked.connect(goto_prev)
         next_btn.clicked.connect(goto_next)
         nav_hbox.addWidget(prev_btn)
         nav_hbox.addWidget(page_label)
         nav_hbox.addWidget(next_btn)
         vbox.addLayout(nav_hbox)
-        # 閉じるボタン
         btns = QDialogButtonBox(QDialogButtonBox.Close)
         btns.rejected.connect(dlg.reject)
         vbox.addWidget(btns)
@@ -453,16 +636,22 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
     # --- 不要な重複・誤ったスコープのコードを削除 ---
     # ダイアログ終了時に全スレッドを安全に停止
     def _cleanup_threads():
-        for t in threads:
+        for t in dlg.threads:
             if t.isRunning():
                 t.quit()
-                t.wait()
+        for t in dlg.threads:
+            t.wait()
+            t.deleteLater()
+        for w in getattr(dlg, 'workers', []):
+            w.deleteLater()
     dlg.finished.connect(_cleanup_threads)
     # ページング用のチェックボックスリストとdelete_cbを初期化
     group_checkboxes = []
     delete_cb = None  # 必要に応じて外部から渡す場合は引数で受け取る
     update_page(broken_groups, group_checkboxes, delete_cb)
     dlg.exec_()
+    for t in dlg.threads:
+        t.wait()
 
 def create_error_group_ui(error_files, get_thumbnail_for_file, detail_cb, delete_cb, thumb_cache=None, defer_queue=None, thumb_widget_map=None):
     group_box = QGroupBox("サムネイル生成エラー/壊れファイル")
@@ -584,6 +773,7 @@ def create_error_group_ui(error_files, get_thumbnail_for_file, detail_cb, delete
 
 class ThumbInfoWorker(QObject):
     finished = pyqtSignal(str, object, object)  # path, pil_thumb, (size_str, duration_str)
+
     def __init__(self, path, thumb_cache, video_info_cache, thumb_size, get_thumbnail_for_file):
         super().__init__()
         self.path = path
@@ -591,17 +781,34 @@ class ThumbInfoWorker(QObject):
         self.video_info_cache = video_info_cache
         self.thumb_size = thumb_size
         self.get_thumbnail_for_file = get_thumbnail_for_file
+        self._canceled = False
+
+    def cancel(self):
+        self._canceled = True
+
     def run(self):
+        if self._canceled:
+            return
+        # キャッシュの取得
         if isinstance(self.thumb_cache, ThumbnailCache):
             cache_dict = self.thumb_cache.cache
         elif isinstance(self.thumb_cache, dict):
             cache_dict = self.thumb_cache
         else:
             cache_dict = {}
+        # キャンセルチェック
+        if self._canceled:
+            return
+        # サムネイル取得
         pil_thumb = cache_dict.get(self.path)
-        if pil_thumb is None:
+        if pil_thumb is None and not self._canceled:
             pil_thumb = self.get_thumbnail_for_file(self.path, self.thumb_size, cache=self.thumb_cache)
-            cache_dict[self.path] = pil_thumb
+            if not self._canceled and pil_thumb is not None:
+                cache_dict[self.path] = pil_thumb
+        # キャンセルチェック
+        if self._canceled:
+            return
+        # ファイル情報取得
         if self.path in self.video_info_cache:
             size_str, duration_str = self.video_info_cache[self.path]
         else:
@@ -611,10 +818,13 @@ class ThumbInfoWorker(QObject):
                 size_str = f"{size_mb:.2f} MB"
             except Exception:
                 size_str = "-"
+            # キャンセルチェック
+            if self._canceled:
+                return
             ext = os.path.splitext(self.path)[1].lower()
             video_exts = ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
             duration_str = ""
-            if ext in video_exts:
+            if ext in video_exts and not self._canceled:
                 try:
                     import cv2
                     cap = cv2.VideoCapture(self.path)
@@ -634,5 +844,8 @@ class ThumbInfoWorker(QObject):
                     cap.release()
                 except Exception:
                     duration_str = ""
-            self.video_info_cache[self.path] = (size_str, duration_str)
-        self.finished.emit(self.path, pil_thumb, (size_str, duration_str))
+            if not self._canceled:
+                self.video_info_cache[self.path] = (size_str, duration_str)
+        # キャンセルチェック
+        if not self._canceled:
+            self.finished.emit(self.path, pil_thumb, (size_str, duration_str))
