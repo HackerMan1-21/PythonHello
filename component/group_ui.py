@@ -183,19 +183,53 @@ def create_duplicate_group_ui(
             import os
             import subprocess
             import sys
-            folder = os.path.dirname(path)
-            if os.path.exists(folder):
+            from PyQt5.QtWidgets import QMessageBox
+            folder = path
+            if not os.path.exists(folder):
+                # ファイルなら親フォルダ
+                folder = os.path.dirname(path)
+            if not os.path.exists(folder):
+                QMessageBox.warning(None, "フォルダを開く", f"パスが存在しません: {folder}")
+                return
+            if os.path.isdir(folder):
                 if sys.platform.startswith('win'):
                     os.startfile(folder)
                 elif sys.platform.startswith('darwin'):
                     subprocess.Popen(['open', folder])
                 else:
                     subprocess.Popen(['xdg-open', folder])
+            else:
+                # ファイルの場合は親フォルダ
+                parent_folder = os.path.dirname(folder)
+                if os.path.exists(parent_folder):
+                    if sys.platform.startswith('win'):
+                        os.startfile(parent_folder)
+                    elif sys.platform.startswith('darwin'):
+                        subprocess.Popen(['open', parent_folder])
+                    else:
+                        subprocess.Popen(['xdg-open', parent_folder])
+                else:
+                    QMessageBox.warning(None, "フォルダを開く", f"フォルダが存在しません: {parent_folder}")
         open_folder_btn.clicked.connect(lambda _, path=f: open_folder(path))
         del_btn = QPushButton("削除")
         del_btn.setStyleSheet("font-size:12px;color:#ff00c8;max-width:140px;")
         del_btn.setFixedWidth(140)
-        del_btn.clicked.connect(lambda _, path=f: delete_cb(path))
+        def delete_and_update(path):
+            try:
+                delete_cb(path)
+                if path in group:
+                    group.remove(path)
+                # 残りが1つになったらUIから消す
+                if len(group) <= 1:
+                    parent_layout = group_box.parentWidget().layout() if group_box.parentWidget() else None
+                    if parent_layout:
+                        parent_layout.removeWidget(group_box)
+                    group_box.deleteLater()
+                # ページングUI対応: 削除後もページ位置を維持（必要ならupdate_pageを呼ぶ）
+                # ここは親側でupdate_pageを呼ぶ設計の場合は不要
+            except Exception as e:
+                print(f"[ERROR] 削除失敗: {e}")
+        del_btn.clicked.connect(lambda _, path=f: delete_and_update(path))
         btn_hbox = QHBoxLayout()
         btn_hbox.setSpacing(8)
         btn_hbox.setContentsMargins(0, 0, 0, 0)
@@ -268,7 +302,28 @@ def create_duplicate_group_ui(
             spacer = QWidget()
             spacer.setFixedWidth(140)
             grid.addWidget(spacer, last_row, col)
-    group_box.setLayout(grid)
+    # 「残り: xxファイル」ラベルの右横に「グループを非表示」ボタンを追加
+    remain_label = QLabel(f"残り: {len(group)}ファイル")
+    remain_label.setStyleSheet("font-size:12px;color:#00ffe7;font-weight:bold;margin-top:4px;")
+    hide_btn = QPushButton("グループを非表示")
+    hide_btn.setStyleSheet("font-size:12px;color:#888;background:#222;border-radius:8px;margin-left:12px;")
+    def hide_group_box():
+        parent_widget = group_box.parentWidget()
+        parent_layout = getattr(parent_widget, 'layout', None)
+        layout_obj = parent_layout() if callable(parent_layout) else None
+        from PyQt5.QtWidgets import QLayout
+        if isinstance(layout_obj, QLayout):
+            layout_obj.removeWidget(group_box)
+        group_box.deleteLater()
+    hide_btn.clicked.connect(hide_group_box)
+    top_hbox = QHBoxLayout()
+    top_hbox.addWidget(remain_label)
+    top_hbox.addWidget(hide_btn)
+    top_hbox.addStretch(1)
+    vbox = QVBoxLayout()
+    vbox.addLayout(top_hbox)
+    vbox.addLayout(grid)
+    group_box.setLayout(vbox)
     parent_dialog = parent
     if parent_dialog is not None and hasattr(parent_dialog, 'finished'):
         def _cleanup_threads():
@@ -335,59 +390,106 @@ def show_face_grouping_dialog(parent, groups, move_selected_files_to_folder_func
             group_checkboxes.append((cb, f))
             del_btn = QPushButton("削除")
             del_btn.setStyleSheet("font-size:12px;color:#ff00c8;")
-            if delete_cb:
-                del_btn.clicked.connect(lambda _, path=f: delete_cb(path))
-            else:
-                del_btn.clicked.connect(lambda _, path=f: (os.remove(path) if os.path.exists(path) else None))
-            vbox2 = QVBoxLayout()
-            vbox2.addWidget(thumb_btn)
-            vbox2.addWidget(name_label)
-            vbox2.addWidget(size_label)
-            vbox2.addWidget(path_label)
-            vbox2.addWidget(cb)
-            vbox2.addWidget(del_btn)
-            file_widget = QWidget()
-            file_widget.setLayout(vbox2)
-            row = idx // max_col
-            col = idx % max_col
-            grid.addWidget(file_widget, row, col)
-            thumb_btn_map[f] = thumb_btn
-            size_label_map[f] = size_label
-            if (f not in cache_dict) or (f not in video_info_cache):
-                thread = QThread()
-                worker = ThumbInfoWorker(f, thumb_cache, video_info_cache, (140, 140), get_thumbnail_for_file)
-                worker.moveToThread(thread)
-                def on_finished(path, pil_thumb, info_tuple, btn=thumb_btn, label=size_label, thread=thread, worker=worker):
-                    try:
-                        from PyQt5 import sip
-                        from component.thumbnail.thumbnail_util import pil_image_to_qpixmap, get_no_thumbnail_image
-                        if sip.isdeleted(label) or sip.isdeleted(btn):
-                            return
-                        if pil_thumb is not None:
-                            btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
-                        else:
-                            btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((140, 140)))))
-                        label.setText(f"{info_tuple[0]}{info_tuple[1]}")
-                    except Exception as e:
-                        print(f"[WARN] on_finished UI更新失敗: {e}")
-                    thread.quit()  # quitのみ。wait/deleteLaterはダイアログ終了時にまとめて
-                    worker.deleteLater()
-                worker.finished.connect(on_finished)
-                thread.started.connect(worker.run)
-                thread.start()
-                threads.append(thread)
-                workers.append(worker)
+        # 不要な try: を削除
+            group_box = QGroupBox(f"顔グループ（残り: {len(group)}ファイル）")
+            grid = QGridLayout()
+            def delete_and_update_face(path):
+                try:
+                    if delete_cb:
+                        delete_cb(path)
+                    else:
+                        if os.path.exists(path):
+                            os.remove(path)
+                    if path in group:
+                        group.remove(path)
+                    if len(group) <= 1:
+                        parent_widget = group_box.parentWidget()
+                        parent_layout = getattr(parent_widget, 'layout', None)
+                        layout_obj = parent_layout() if callable(parent_layout) else None
+                        from PyQt5.QtWidgets import QLayout
+                        if isinstance(layout_obj, QLayout):
+                            layout_obj.removeWidget(group_box)
+                        group_box.deleteLater()
+                    # ページングUI対応: 削除後もページ位置を維持
+                    # 顔グループUIはページング未実装だが、将来の拡張用に記載
+                except Exception as e:
+                    print(f"[ERROR] 顔グループ削除失敗: {e}")
+            for idx, f in enumerate(group):
+                thumb_btn = QPushButton()
+                thumb_btn.setStyleSheet("background:transparent;border:0;padding:0;")
+                thumb_btn.setFixedSize(140, 140)
+                from component.thumbnail.thumbnail_util import get_no_thumbnail_image, pil_image_to_qpixmap
+                thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((140, 140)))))
+                thumb_btn.setIconSize(QSize(140, 140))
+                thumb_btn.setStyleSheet("background:transparent;border:2px solid #00ff99;border-radius:10px;")
+                fname = os.path.basename(f)
+                maxlen = 18
+                fname_disp = fname[:8] + '...' + fname[-7:] if len(fname) > maxlen else fname
+                name_label = QLabel(fname_disp)
+                name_label.setStyleSheet("font-size:12px;color:#00ff99;font-weight:bold;")
+                size_label = QLabel("取得中...")
+                size_label.setStyleSheet("font-size:11px;color:#00ff99;")
+                path_label = QLabel(f)
+                path_label.setStyleSheet("font-size:10px;color:#00ff99;max-width:140px;")
+                path_label.setWordWrap(True)
+                path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                cb = QCheckBox("選択")
+                group_checkboxes.append((cb, f))
+                del_btn = QPushButton("削除")
+                del_btn.setStyleSheet("font-size:12px;color:#ff00c8;")
+                del_btn.clicked.connect(lambda _, path=f: delete_and_update_face(path))
+                # サムネイル取得の非同期処理（on_finishedのexceptインデント修正）
+                if (f not in cache_dict) or (f not in video_info_cache):
+                    thread = QThread()
+                    worker = ThumbInfoWorker(f, thumb_cache, video_info_cache, (140, 140), get_thumbnail_for_file)
+                    worker.moveToThread(thread)
+                    def on_finished(path, pil_thumb, info_tuple, btn=thumb_btn, label=size_label):
+                        try:
+                            from PyQt5 import sip
+                            from component.thumbnail.thumbnail_util import pil_image_to_qpixmap, get_no_thumbnail_image
+                            if sip.isdeleted(label) or sip.isdeleted(btn):
+                                return
+                            if pil_thumb is not None:
+                                btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
+                            else:
+                                btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((140, 140)))))
+                            label.setText(f"{info_tuple[0]}{info_tuple[1]}")
+                        except Exception as e:
+                            print(f"[WARN] on_finished UI更新失敗: {e}")
+                        thread.quit()
+                        worker.deleteLater()
+                    worker.finished.connect(on_finished)
+                    thread.started.connect(worker.run)
+                    thread.start()
+                    threads.append(thread)
+                    workers.append(worker)
             else:
                 pil_thumb = cache_dict[f]
                 btn = thumb_btn_map[f]
                 btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
                 size_str, duration_str = video_info_cache[f]
                 size_label_map[f].setText(f"{size_str}{duration_str}")
-        group_box.setLayout(grid)
-        vbox.addWidget(group_box)
+        # 顔グループUIにも「グループを非表示」ボタンを右横に追加
         remain_label = QLabel(f"残り: {len(group)}ファイル")
         remain_label.setStyleSheet("font-size:12px;color:#00ff99;font-weight:bold;margin-top:4px;")
-        vbox.addWidget(remain_label)
+        hide_btn = QPushButton("グループを非表示")
+        hide_btn.setStyleSheet("font-size:12px;color:#888;background:#222;border-radius:8px;margin-left:12px;")
+        def hide_group_box():
+            parent_widget = group_box.parentWidget()
+            parent_layout = getattr(parent_widget, 'layout', None)
+            layout_obj = parent_layout() if callable(parent_layout) else None
+            from PyQt5.QtWidgets import QLayout
+            if isinstance(layout_obj, QLayout):
+                layout_obj.removeWidget(group_box)
+            group_box.deleteLater()
+        hide_btn.clicked.connect(hide_group_box)
+        top_hbox = QHBoxLayout()
+        top_hbox.addWidget(remain_label)
+        top_hbox.addWidget(hide_btn)
+        top_hbox.addStretch(1)
+        vbox.addLayout(top_hbox)
+        vbox.addLayout(grid)
+        group_box.setLayout(vbox)
     move_btn = QPushButton("選択したファイルをフォルダに移動")
     move_btn.clicked.connect(lambda: move_selected_files_to_folder_func(group_checkboxes, dlg))
     vbox.addWidget(move_btn)
@@ -533,7 +635,32 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
                 digital_btn.clicked.connect(lambda _, path=f: run_mp4_digital_repair(path))
                 del_btn = QPushButton("削除")
                 del_btn.setStyleSheet("font-size:12px;color:#ff00c8;")
-                del_btn.clicked.connect(lambda _, path=f: os.remove(path) if os.path.exists(path) else None)
+                def delete_and_update_broken(path):
+                    try:
+                        if os.path.exists(path):
+                            os.remove(path)
+                        if path in group:
+                            group.remove(path)
+                        # グループが1つになったらUIから消す
+                        if len(group) <= 1:
+                            parent_widget = group_box.parentWidget()
+                            parent_layout = getattr(parent_widget, 'layout', None)
+                            layout_obj = parent_layout() if callable(parent_layout) else None
+                            from PyQt5.QtWidgets import QLayout
+                            if isinstance(layout_obj, QLayout):
+                                layout_obj.removeWidget(group_box)
+                            group_box.deleteLater()
+                        # ページングUIの場合、削除後もcurrent_pageを維持して再描画
+                        # ページ内のグループが全て消えた場合のみcurrent_pageを1つ前に戻す
+                        page_start = current_page[0] * page_size
+                        page_end = min(page_start + page_size, len(broken_groups))
+                        page_groups = broken_groups[page_start:page_end]
+                        if all(len(g) <= 1 for g in page_groups) and current_page[0] > 0:
+                            current_page[0] -= 1
+                        update_page(broken_groups, group_checkboxes, delete_cb)
+                    except Exception as e:
+                        print(f"[ERROR] 壊れ動画削除失敗: {e}")
+                del_btn.clicked.connect(lambda _, path=f: delete_and_update_broken(path))
                 vbox2 = QVBoxLayout()
                 vbox2.addWidget(thumb_btn)
                 vbox2.addWidget(name_label)
@@ -594,8 +721,27 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
                     spacer = QWidget()
                     spacer.setFixedWidth(140)
                     grid.addWidget(spacer, last_row, col)
-            group_box.setLayout(grid)
-            vbox.addWidget(group_box)
+            # 壊れ動画グループUIにも「グループを非表示」ボタンを右横に追加
+            remain_label = QLabel(f"残り: {len(group)}ファイル")
+            remain_label.setStyleSheet("font-size:12px;color:#ff4444;font-weight:bold;margin-top:4px;")
+            hide_btn = QPushButton("グループを非表示")
+            hide_btn.setStyleSheet("font-size:12px;color:#888;background:#222;border-radius:8px;margin-left:12px;")
+            def hide_group_box():
+                parent_widget = group_box.parentWidget()
+                parent_layout = getattr(parent_widget, 'layout', None)
+                layout_obj = parent_layout() if callable(parent_layout) else None
+                from PyQt5.QtWidgets import QLayout
+                if isinstance(layout_obj, QLayout):
+                    layout_obj.removeWidget(group_box)
+                group_box.deleteLater()
+            hide_btn.clicked.connect(hide_group_box)
+            top_hbox = QHBoxLayout()
+            top_hbox.addWidget(remain_label)
+            top_hbox.addWidget(hide_btn)
+            top_hbox.addStretch(1)
+            vbox.addLayout(top_hbox)
+            vbox.addLayout(grid)
+            group_box.setLayout(vbox)
         nav_hbox = QHBoxLayout()
         prev_btn = QPushButton("前のページ")
         next_btn = QPushButton("次のページ")
@@ -759,7 +905,24 @@ def create_error_group_ui(error_files, get_thumbnail_for_file, detail_cb, delete
         del_btn = QPushButton("削除")
         del_btn.setStyleSheet("font-size:12px;color:#ff00c8;max-width:140px;")
         del_btn.setFixedWidth(80)
-        del_btn.clicked.connect(lambda _, path=f: delete_cb(path))
+        def delete_and_update_error(path):
+            try:
+                delete_cb(path)
+                if path in error_files:
+                    error_files.remove(path)
+                if len(error_files) <= 1:
+                    parent_widget = group_box.parentWidget()
+                    parent_layout = getattr(parent_widget, 'layout', None)
+                    layout_obj = parent_layout() if callable(parent_layout) else None
+                    from PyQt5.QtWidgets import QLayout
+                    if isinstance(layout_obj, QLayout):
+                        layout_obj.removeWidget(group_box)
+                    group_box.deleteLater()
+                # ページングUI対応: 削除後もページ位置を維持
+                # エラーグループUIはページング未実装だが、将来の拡張用に記載
+            except Exception as e:
+                print(f"[ERROR] エラーグループ削除失敗: {e}")
+        del_btn.clicked.connect(lambda _, path=f: delete_and_update_error(path))
         btn_hbox = QHBoxLayout()
         btn_hbox.setSpacing(8)
         btn_hbox.setContentsMargins(0, 0, 0, 0)
@@ -809,8 +972,27 @@ def create_error_group_ui(error_files, get_thumbnail_for_file, detail_cb, delete
             btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
             size_str, duration_str = video_info_cache[f]
             name_label.setText(f"{size_str}{duration_str}")
-    group_box.setLayout(grid)
-    # group_boxの親がQDialogなら、閉じるときにスレッドを止める
+    # エラーグループUIにも「グループを非表示」ボタンを右横に追加
+    remain_label = QLabel(f"残り: {len(error_files)}ファイル")
+    remain_label.setStyleSheet("font-size:12px;color:#ff4444;font-weight:bold;margin-top:4px;")
+    hide_btn = QPushButton("グループを非表示")
+    hide_btn.setStyleSheet("font-size:12px;color:#888;background:#222;border-radius:8px;margin-left:12px;")
+    def hide_group_box():
+        parent_widget = group_box.parentWidget()
+        parent_layout = getattr(parent_widget, 'layout', None)
+        layout_obj = parent_layout() if callable(parent_layout) else None
+        if layout_obj:
+            layout_obj.removeWidget(group_box)
+        group_box.deleteLater()
+    hide_btn.clicked.connect(hide_group_box)
+    top_hbox = QHBoxLayout()
+    top_hbox.addWidget(remain_label)
+    top_hbox.addWidget(hide_btn)
+    top_hbox.addStretch(1)
+    vbox = QVBoxLayout()
+    vbox.addLayout(top_hbox)
+    vbox.addLayout(grid)
+    group_box.setLayout(vbox)
     return group_box
 
 class ThumbInfoWorker(QObject):
