@@ -122,6 +122,7 @@ def create_duplicate_group_ui(
     eta_time=None,
     remain_count=None
 ) -> QGroupBox:
+    from PyQt5.QtWidgets import QScrollArea
     group_box = QGroupBox(f"重複グループ（残り: {len(group)}ファイル）")
     grid = QGridLayout()
     grid.setHorizontalSpacing(12)
@@ -143,13 +144,14 @@ def create_duplicate_group_ui(
     group_box.threads = threads  # QGroupBoxの属性として保持
     group_box.workers = workers
     # cache_dictは上で定義済み
+    thumb_btns = []
     for idx, f in enumerate(group):
         norm_path = os.path.abspath(os.path.normpath(f))
         thumb_btn = QPushButton()
         thumb_btn.setStyleSheet("background:transparent;border:0;padding:0;")
         thumb_btn.setFixedSize(140, 140)
         from component.thumbnail.thumbnail_util import get_no_thumbnail_image, pil_image_to_qpixmap
-        thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((140, 140)))))
+        thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((140, 140)))));
         thumb_btn.setIconSize(QSize(140, 140))
         thumb_btn.setStyleSheet("background:transparent;border:2px solid #00ffe7;border-radius:10px;")
         thumb_btn.clicked.connect(lambda _, path=f: detail_cb(parent, path))
@@ -186,7 +188,6 @@ def create_duplicate_group_ui(
             from PyQt5.QtWidgets import QMessageBox
             folder = path
             if not os.path.exists(folder):
-                # ファイルなら親フォルダ
                 folder = os.path.dirname(path)
             if not os.path.exists(folder):
                 QMessageBox.warning(None, "フォルダを開く", f"パスが存在しません: {folder}")
@@ -199,7 +200,6 @@ def create_duplicate_group_ui(
                 else:
                     subprocess.Popen(['xdg-open', folder])
             else:
-                # ファイルの場合は親フォルダ
                 parent_folder = os.path.dirname(folder)
                 if os.path.exists(parent_folder):
                     if sys.platform.startswith('win'):
@@ -217,16 +217,33 @@ def create_duplicate_group_ui(
         def delete_and_update(path):
             try:
                 delete_cb(path)
+                norm_path = os.path.abspath(os.path.normpath(path))
+                if norm_path in cache_dict:
+                    del cache_dict[norm_path]
+                if norm_path in video_info_cache:
+                    del video_info_cache[norm_path]
                 if path in group:
                     group.remove(path)
-                # 残りが1つになったらUIから消す
+                # 削除時にQThread/Workerを安全に停止・破棄
+                for t in getattr(group_box, 'threads', []):
+                    if t.isRunning():
+                        t.quit()
+                for t in getattr(group_box, 'threads', []):
+                    t.wait()
+                    t.deleteLater()
+                for w in getattr(group_box, 'workers', []):
+                    w.deleteLater()
                 if len(group) <= 1:
-                    parent_layout = group_box.parentWidget().layout() if group_box.parentWidget() else None
-                    if parent_layout:
-                        parent_layout.removeWidget(group_box)
+                    parent_widget = group_box.parentWidget()
+                    parent_layout = getattr(parent_widget, 'layout', None)
+                    layout_obj = parent_layout() if callable(parent_layout) else None
+                    from PyQt5.QtWidgets import QLayout
+                    if isinstance(layout_obj, QLayout):
+                        layout_obj.removeWidget(group_box)
                     group_box.deleteLater()
-                # ページングUI対応: 削除後もページ位置を維持（必要ならupdate_pageを呼ぶ）
-                # ここは親側でupdate_pageを呼ぶ設計の場合は不要
+                else:
+                    from PyQt5.QtCore import QTimer
+                    QTimer.singleShot(100, lambda: group_box.update())
             except Exception as e:
                 print(f"[ERROR] 削除失敗: {e}")
         del_btn.clicked.connect(lambda _, path=f: delete_and_update(path))
@@ -256,45 +273,7 @@ def create_duplicate_group_ui(
         grid.addWidget(file_widget, row, col)
         thumb_btn_map[norm_path] = thumb_btn
         size_label_map[norm_path] = size_label
-        if (norm_path not in cache_dict) or (norm_path not in video_info_cache):
-            thread = QThread()
-            worker = ThumbInfoWorker(norm_path, cache_dict, video_info_cache, (140, 140), get_thumbnail_for_file)
-            worker.moveToThread(thread)
-            def on_finished(path, pil_thumb, info_tuple, btn=thumb_btn, label=size_label, thread=thread, worker=worker):
-                from PyQt5.QtCore import QTimer
-                def update_ui():
-                    try:
-                        from PyQt5 import sip
-                        from component.thumbnail.thumbnail_util import pil_image_to_qpixmap, get_no_thumbnail_image
-                        norm_path = os.path.abspath(os.path.normpath(path))
-                        if sip.isdeleted(label) or sip.isdeleted(btn):
-                            print(f"[DEBUG] on_finished: UIオブジェクト削除済み {norm_path}")
-                            return
-                        # キャッシュ保存も正規化キーで
-                        cache_dict[norm_path] = pil_thumb
-                        video_info_cache[norm_path] = info_tuple
-                        if pil_thumb is not None:
-                            btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
-                        else:
-                            btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((140, 140)))))
-                        label.setText(f"{info_tuple[0]}{info_tuple[1]}")
-                        print(f"[DEBUG] on_finished: UI更新 {norm_path} {info_tuple}")
-                    except Exception as e:
-                        print(f"[WARN] on_finished UI更新失敗: {e}")
-                    thread.quit()  # quitのみ。wait/deleteLaterは終了時にまとめて
-                    worker.deleteLater()
-                QTimer.singleShot(0, update_ui)
-            worker.finished.connect(on_finished)
-            thread.started.connect(worker.run)
-            thread.start()
-            threads.append(thread)
-            workers.append(worker)
-        else:
-            pil_thumb = cache_dict[norm_path]
-            btn = thumb_btn_map[norm_path]
-            btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
-            size_str, duration_str = video_info_cache[norm_path]
-            size_label_map[norm_path].setText(f"サイズ: {size_str}{duration_str}")
+        thumb_btns.append((thumb_btn, norm_path))
     n_items = len(group)
     if n_items % max_col != 0:
         last_row = n_items // max_col
@@ -302,12 +281,18 @@ def create_duplicate_group_ui(
             spacer = QWidget()
             spacer.setFixedWidth(140)
             grid.addWidget(spacer, last_row, col)
-    # 「残り: xxファイル」ラベルの右横に「グループを非表示」ボタンを追加
     remain_label = QLabel(f"残り: {len(group)}ファイル")
     remain_label.setStyleSheet("font-size:12px;color:#00ffe7;font-weight:bold;margin-top:4px;")
     hide_btn = QPushButton("グループを非表示")
     hide_btn.setStyleSheet("font-size:12px;color:#888;background:#222;border-radius:8px;margin-left:12px;")
     def hide_group_box():
+        # キャッシュ削除
+        for f in group:
+            norm_path = os.path.abspath(os.path.normpath(f))
+            if norm_path in cache_dict:
+                del cache_dict[norm_path]
+            if norm_path in video_info_cache:
+                del video_info_cache[norm_path]
         parent_widget = group_box.parentWidget()
         parent_layout = getattr(parent_widget, 'layout', None)
         layout_obj = parent_layout() if callable(parent_layout) else None
@@ -323,7 +308,73 @@ def create_duplicate_group_ui(
     vbox = QVBoxLayout()
     vbox.addLayout(top_hbox)
     vbox.addLayout(grid)
-    group_box.setLayout(vbox)
+    grid_widget = QWidget()
+    grid_widget.setLayout(vbox)
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setWidget(grid_widget)
+    scroll.setMinimumHeight(600)
+    scroll.setMinimumWidth(600)
+    # 遅延サムネイル生成用: スクロール時に表示範囲のボタンだけ生成
+    def update_visible_thumbnails():
+        viewport = scroll.viewport()
+        rect = viewport.rect()
+        for btn, norm_path in thumb_btns:
+            btn_pos = btn.mapTo(viewport, btn.rect().topLeft())
+            btn_rect = btn.rect()
+            btn_rect.moveTopLeft(btn_pos)
+            if rect.intersects(btn_rect):
+                if (norm_path not in cache_dict) and (norm_path not in video_info_cache):
+                    thread = QThread()
+                    worker = ThumbInfoWorker(norm_path, cache_dict, video_info_cache, (140, 140), get_thumbnail_for_file)
+                    worker.moveToThread(thread)
+                    def on_finished(path, pil_thumb, info_tuple, btn=btn, thread=thread, worker=worker):
+                        from PyQt5.QtCore import QTimer
+                        def update_ui():
+                            try:
+                                from PyQt5 import sip
+                                from component.thumbnail.thumbnail_util import pil_image_to_qpixmap, get_no_thumbnail_image
+                                norm_path2 = os.path.abspath(os.path.normpath(path))
+                                label = size_label_map.get(norm_path2)
+                                if label is not None and (sip.isdeleted(label) or sip.isdeleted(btn)):
+                                    return
+                                cache_dict[norm_path2] = pil_thumb
+                                video_info_cache[norm_path2] = info_tuple
+                                if pil_thumb is not None:
+                                    btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
+                                else:
+                                    btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((140, 140)))))
+                                if label is not None:
+                                    label.setText(f"{info_tuple[0]}{info_tuple[1]}")
+                            except Exception as e:
+                                print(f"[WARN] on_finished UI更新失敗: {e}")
+                            thread.quit()
+                            worker.deleteLater()
+                        QTimer.singleShot(0, update_ui)
+                    worker.finished.connect(on_finished)
+                    thread.started.connect(worker.run)
+                    thread.start()
+                    group_box.threads.append(thread)
+                    group_box.workers.append(worker)
+                else:
+                    # 生成済みの場合はキャッシュ内容を反映
+                    pil_thumb = cache_dict.get(norm_path)
+                    info_tuple = video_info_cache.get(norm_path, ("", ""))
+                    label = size_label_map.get(norm_path)
+                    if pil_thumb is not None:
+                        btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
+                    else:
+                        btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((140, 140)))))
+                    if label is not None:
+                        label.setText(f"{info_tuple[0]}{info_tuple[1]}")
+    scroll.verticalScrollBar().valueChanged.connect(lambda _: update_visible_thumbnails())
+    scroll.horizontalScrollBar().valueChanged.connect(lambda _: update_visible_thumbnails())
+    # 初回表示時にもサムネイル生成
+    QTimer.singleShot(100, update_visible_thumbnails)
+    # group_boxのレイアウトにscrollを追加
+    layout = QVBoxLayout()
+    layout.addWidget(scroll)
+    group_box.setLayout(layout)
     parent_dialog = parent
     if parent_dialog is not None and hasattr(parent_dialog, 'finished'):
         def _cleanup_threads():
@@ -410,8 +461,9 @@ def show_face_grouping_dialog(parent, groups, move_selected_files_to_folder_func
                         if isinstance(layout_obj, QLayout):
                             layout_obj.removeWidget(group_box)
                         group_box.deleteLater()
-                    # ページングUI対応: 削除後もページ位置を維持
-                    # 顔グループUIはページング未実装だが、将来の拡張用に記載
+                    else:
+                        from PyQt5.QtCore import QTimer
+                        QTimer.singleShot(100, lambda: group_box.update())
                 except Exception as e:
                     print(f"[ERROR] 顔グループ削除失敗: {e}")
             for idx, f in enumerate(group):
@@ -542,9 +594,6 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
     dlg = QDialog(parent)
     dlg.setWindowTitle("壊れ動画グループ")
     vbox = QVBoxLayout()
-    page_size = 8
-    current_page = [0]
-    total_pages = (len(broken_groups) + page_size - 1) // page_size
     if thumb_cache is None:
         thumb_cache = {}
     video_info_cache = {}
@@ -554,275 +603,169 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
     workers = []  # Worker参照も保持
     dlg.threads = threads  # ダイアログの属性として保持
     dlg.workers = workers
-    import time
-    from PyQt5.QtWidgets import QApplication
-    def _cleanup_current_threads():
-        # すべてのワーカーにキャンセルを通知
-        for w in dlg.workers:
-            if hasattr(w, 'cancel'):
-                w.cancel()
-        # すべてのスレッドにquitを投げる
-        for t in dlg.threads:
-            if t.isRunning():
-                t.quit()
-        # すべてのスレッドが終了するまでwaitし、deleteLater
-        for t in dlg.threads:
-            t.wait()
-            t.deleteLater()
-        # ワーカーもdeleteLater
-        for w in dlg.workers:
-            w.deleteLater()
-        dlg.threads.clear()
-        dlg.workers.clear()
-
-    def update_page(groups, group_checkboxes, delete_cb, progress_dialog=None):
-        # 1. まずスレッド/ワーカーの完全クリーンアップを同期的に行う
-        _cleanup_current_threads()
-        # 2. その後で新規スレッド/ワーカー生成
-        if isinstance(thumb_cache, ThumbnailCache):
-            cache_dict = thumb_cache.cache
-        elif isinstance(thumb_cache, dict):
-            cache_dict = thumb_cache
-        else:
-            cache_dict = {}
-        # ここだけUIロック（ちらつき最小化）
-        dlg.setUpdatesEnabled(False)
-        try:
-            while vbox.count() > 0:
-                item = vbox.takeAt(0)
-                if item is not None:
-                    w = item.widget() if hasattr(item, 'widget') else None
-                    if w is not None:
-                        w.deleteLater()
-        finally:
-            dlg.setUpdatesEnabled(True)
-        # ここからはUI有効化したまま新規ウィジェット追加
-        start = current_page[0] * page_size
-        end = min(start + page_size, len(groups))
-        max_concurrent_thumbnails = 4
-        active_threads = []
-        for group in groups[start:end]:
-            group_box = QGroupBox(f"壊れ動画グループ（残り: {len(group)}ファイル）")
-            grid = QGridLayout()
-            max_col = 4
-            for idx, f in enumerate(group):
-                thumb_btn = QPushButton()
-                thumb_btn.setStyleSheet("background:transparent;border:0;padding:0;")
-                thumb_btn.setFixedSize(140, 140)
-                from component.thumbnail.thumbnail_util import get_no_thumbnail_image, pil_image_to_qpixmap
-                thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((140, 140)))))
-                thumb_btn.setIconSize(QSize(140, 140))
-                thumb_btn.setStyleSheet("background:transparent;border:2px solid #ff4444;border-radius:10px;")
-                fname = os.path.basename(f)
-                maxlen = 18
-                fname_disp = fname[:8] + '...' + fname[-7:] if len(fname) > maxlen else fname
-                name_label = QLabel(fname_disp)
-                name_label.setStyleSheet("font-size:12px;color:#ff4444;font-weight:bold;")
-                size_label = QLabel("取得中...")
-                size_label.setStyleSheet("font-size:11px;color:#00ff99;")
-                path_label = QLabel(f)
-                path_label.setStyleSheet("font-size:10px;color:#00ff99;max-width:140px;")
-                path_label.setWordWrap(True)
-                path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                repair_btn = QPushButton("修復")
-                repair_btn.setStyleSheet("font-size:11px;color:#00ffe7;border:2px solid #00ffe7;border-radius:8px;")
-                repair_btn.clicked.connect(lambda _, path=f: run_mp4_repair(path))
-                convert_btn = QPushButton("変換")
-                convert_btn.setStyleSheet("font-size:11px;color:#00ff99;border:2px solid #00ff99;border-radius:8px;")
-                convert_btn.clicked.connect(lambda _, path=f: run_mp4_convert(path))
-                digital_btn = QPushButton("デジタル修復")
-                digital_btn.setStyleSheet("font-size:11px;color:#ff44ff;border:2px solid #ff44ff;border-radius:8px;")
-                digital_btn.clicked.connect(lambda _, path=f: run_mp4_digital_repair(path))
-                del_btn = QPushButton("削除")
-                del_btn.setStyleSheet("font-size:12px;color:#ff00c8;")
-                def delete_and_update_broken(path):
-                    try:
-                        if os.path.exists(path):
-                            os.remove(path)
-                        if path in group:
-                            group.remove(path)
-                        # グループが1つになったらUIから消す
-                        if len(group) <= 1:
-                            parent_widget = group_box.parentWidget()
-                            parent_layout = getattr(parent_widget, 'layout', None)
-                            layout_obj = parent_layout() if callable(parent_layout) else None
-                            from PyQt5.QtWidgets import QLayout
-                            if isinstance(layout_obj, QLayout):
-                                layout_obj.removeWidget(group_box)
-                            group_box.deleteLater()
-                        # ページングUIの場合、削除後もcurrent_pageを維持して再描画
-                        # ページ内のグループが全て消えた場合のみcurrent_pageを1つ前に戻す
-                        page_start = current_page[0] * page_size
-                        page_end = min(page_start + page_size, len(broken_groups))
-                        page_groups = broken_groups[page_start:page_end]
-                        if all(len(g) <= 1 for g in page_groups) and current_page[0] > 0:
-                            current_page[0] -= 1
-                        update_page(broken_groups, group_checkboxes, delete_cb)
-                    except Exception as e:
-                        print(f"[ERROR] 壊れ動画削除失敗: {e}")
-                del_btn.clicked.connect(lambda _, path=f: delete_and_update_broken(path))
-                vbox2 = QVBoxLayout()
-                vbox2.addWidget(thumb_btn)
-                vbox2.addWidget(name_label)
-                vbox2.addWidget(size_label)
-                vbox2.addWidget(path_label)
-                vbox2.addWidget(repair_btn)
-                vbox2.addWidget(convert_btn)
-                vbox2.addWidget(digital_btn)
-                vbox2.addWidget(del_btn)
-                file_widget = QWidget()
-                file_widget.setLayout(vbox2)
-                row = idx // max_col
-                col = idx % max_col
-                grid.addWidget(file_widget, row, col)
-                thumb_btn_map[f] = thumb_btn
-                size_label_map[f] = size_label
+    from PyQt5.QtWidgets import QScrollArea
+    thumb_btns = []
+    max_col = 4
+    for group in broken_groups:
+        group_box = QGroupBox(f"壊れ動画グループ（残り: {len(group)}ファイル）")
+        grid = QGridLayout()
+        for idx, f in enumerate(group):
+            thumb_btn = QPushButton()
+            thumb_btn.setStyleSheet("background:transparent;border:0;padding:0;")
+            thumb_btn.setFixedSize(140, 140)
+            from component.thumbnail.thumbnail_util import get_no_thumbnail_image, pil_image_to_qpixmap
+            thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((140, 140)))));
+            thumb_btn.setIconSize(QSize(140, 140))
+            thumb_btn.setStyleSheet("background:transparent;border:2px solid #ff4444;border-radius:10px;")
+            fname = os.path.basename(f)
+            maxlen = 18
+            fname_disp = fname[:8] + '...' + fname[-7:] if len(fname) > maxlen else fname
+            name_label = QLabel(fname_disp)
+            name_label.setStyleSheet("font-size:12px;color:#ff4444;font-weight:bold;")
+            size_label = QLabel("取得中...")
+            size_label.setStyleSheet("font-size:11px;color:#00ff99;")
+            path_label = QLabel(f)
+            path_label.setStyleSheet("font-size:10px;color:#00ff99;max-width:140px;")
+            path_label.setWordWrap(True)
+            path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            repair_btn = QPushButton("修復")
+            repair_btn.setStyleSheet("font-size:11px;color:#00ffe7;border:2px solid #00ffe7;border-radius:8px;")
+            repair_btn.clicked.connect(lambda _, path=f: run_mp4_repair(path))
+            convert_btn = QPushButton("変換")
+            convert_btn.setStyleSheet("font-size:11px;color:#00ff99;border:2px solid #00ff99;border-radius:8px;")
+            convert_btn.clicked.connect(lambda _, path=f: run_mp4_convert(path))
+            digital_btn = QPushButton("デジタル修復")
+            digital_btn.setStyleSheet("font-size:11px;color:#ff44ff;border:2px solid #ff44ff;border-radius:8px;")
+            digital_btn.clicked.connect(lambda _, path=f: run_mp4_digital_repair(path))
+            del_btn = QPushButton("削除")
+            del_btn.setStyleSheet("font-size:12px;color:#ff00c8;")
+            def delete_and_update_broken(path):
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                    norm_path = os.path.abspath(os.path.normpath(path))
+                    if norm_path in cache_dict:
+                        del cache_dict[norm_path]
+                    if norm_path in video_info_cache:
+                        del video_info_cache[norm_path]
+                    if path in group:
+                        group.remove(path)
+                    if len(group) <= 1:
+                        parent_widget = group_box.parentWidget()
+                        parent_layout = getattr(parent_widget, 'layout', None)
+                        layout_obj = parent_layout() if callable(parent_layout) else None
+                        from PyQt5.QtWidgets import QLayout
+                        if isinstance(layout_obj, QLayout):
+                            layout_obj.removeWidget(group_box)
+                        group_box.deleteLater()
+                    else:
+                        from PyQt5.QtCore import QTimer
+                        QTimer.singleShot(100, lambda: group_box.update())
+                except Exception as e:
+                    print(f"[ERROR] 壊れ動画削除失敗: {e}")
+            del_btn.clicked.connect(lambda _, path=f: delete_and_update_broken(path))
+            vbox2 = QVBoxLayout()
+            vbox2.addWidget(thumb_btn)
+            vbox2.addWidget(name_label)
+            vbox2.addWidget(size_label)
+            vbox2.addWidget(path_label)
+            vbox2.addWidget(repair_btn)
+            vbox2.addWidget(convert_btn)
+            vbox2.addWidget(digital_btn)
+            vbox2.addWidget(del_btn)
+            file_widget = QWidget()
+            file_widget.setLayout(vbox2)
+            row = idx // max_col
+            col = idx % max_col
+            grid.addWidget(file_widget, row, col)
+            thumb_btn_map[f] = thumb_btn
+            size_label_map[f] = size_label
+            thumb_btns.append((thumb_btn, f))
+        n_items = len(group)
+        if n_items % max_col != 0:
+            last_row = n_items // max_col
+            for col in range(n_items % max_col, max_col):
+                spacer = QWidget()
+                spacer.setFixedWidth(140)
+                grid.addWidget(spacer, last_row, col)
+        remain_label = QLabel(f"残り: {len(group)}ファイル")
+        remain_label.setStyleSheet("font-size:12px;color:#ff4444;font-weight:bold;margin-top:4px;")
+        hide_btn = QPushButton("グループを非表示")
+        hide_btn.setStyleSheet("font-size:12px;color:#888;background:#222;border-radius:8px;margin-left:12px;")
+        def hide_group_box():
+            # キャッシュ削除
+            for f in group:
+                norm_path = os.path.abspath(os.path.normpath(f))
+                if norm_path in cache_dict:
+                    del cache_dict[norm_path]
+                if norm_path in video_info_cache:
+                    del video_info_cache[norm_path]
+            parent_widget = group_box.parentWidget()
+            parent_layout = getattr(parent_widget, 'layout', None)
+            layout_obj = parent_layout() if callable(parent_layout) else None
+            from PyQt5.QtWidgets import QLayout
+            if isinstance(layout_obj, QLayout):
+                layout_obj.removeWidget(group_box)
+            group_box.deleteLater()
+        hide_btn.clicked.connect(hide_group_box)
+        top_hbox = QHBoxLayout()
+        top_hbox.addWidget(remain_label)
+        top_hbox.addWidget(hide_btn)
+        top_hbox.addStretch(1)
+        vbox.addLayout(top_hbox)
+        vbox.addLayout(grid)
+    grid_widget = QWidget()
+    grid_widget.setLayout(vbox)
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setWidget(grid_widget)
+    scroll.setMinimumHeight(600)
+    scroll.setMinimumWidth(600)
+    def update_visible_thumbnails():
+        viewport = scroll.viewport()
+        rect = viewport.rect()
+        for btn, f in thumb_btns:
+            btn_pos = btn.mapTo(viewport, btn.rect().topLeft())
+            btn_rect = btn.geometry()
+            btn_rect.moveTopLeft(btn_pos)
+            if rect.intersects(btn_rect):
                 if (f not in cache_dict) or (f not in video_info_cache):
-                    while len(active_threads) >= max_concurrent_thumbnails:
-                        active_threads = [t for t in active_threads if t.isRunning()]
-                        if len(active_threads) >= max_concurrent_thumbnails:
-                            QApplication.processEvents()
-                            import time
-                            time.sleep(0.01)
                     thread = QThread()
                     worker = ThumbInfoWorker(f, cache_dict, video_info_cache, (140, 140), get_thumbnail_for_file)
                     worker.moveToThread(thread)
-                    def on_finished(path, pil_thumb, info_tuple, btn=thumb_btn, label=size_label, thread=thread, worker=worker):
-                        try:
-                            from PyQt5 import sip
-                            from component.thumbnail.thumbnail_util import pil_image_to_qpixmap, get_no_thumbnail_image
-                            if sip.isdeleted(label) or sip.isdeleted(btn):
-                                return
-                            if pil_thumb is not None:
-                                QTimer.singleShot(0, lambda: btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb))))
-                            else:
-                                QTimer.singleShot(0, lambda: btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((140, 140))))))
-                            label.setText(f"{info_tuple[0]}{info_tuple[1]}")
-                        except Exception as e:
-                            print(f"[WARN] on_finished UI更新失敗: {e}")
-                        thread.quit()
-                        worker.deleteLater()
+                    def on_finished(path, pil_thumb, info_tuple, btn=btn, label=size_label_map.get(path, None), thread=thread, worker=worker):
+                        from PyQt5.QtCore import QTimer
+                        def update_ui():
+                            try:
+                                from PyQt5 import sip
+                                from component.thumbnail.thumbnail_util import pil_image_to_qpixmap, get_no_thumbnail_image
+                                norm_path2 = os.path.abspath(os.path.normpath(path))
+                                if label is not None and (sip.isdeleted(label) or sip.isdeleted(btn)):
+                                    return
+                                cache_dict[norm_path2] = pil_thumb
+                                video_info_cache[norm_path2] = info_tuple
+                                if pil_thumb is not None:
+                                    btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
+                                else:
+                                    btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((140, 140)))));
+                                if label is not None:
+                                    label.setText(f"{info_tuple[0]}{info_tuple[1]}")
+                            except Exception as e:
+                                print(f"[WARN] on_finished UI更新失敗: {e}")
+                            thread.quit()
+                            worker.deleteLater()
+                        QTimer.singleShot(0, update_ui)
                     worker.finished.connect(on_finished)
                     thread.started.connect(worker.run)
                     thread.start()
-                    threads.append(thread)
-                    workers.append(worker)
-                    active_threads.append(thread)
-                else:
-                    pil_thumb = cache_dict[f]
-                    btn = thumb_btn_map[f]
-                    btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
-                    size_str, duration_str = video_info_cache[f]
-                    size_label_map[f].setText(f"{size_str}{duration_str}")
-            n_items = len(group)
-            if n_items % max_col != 0:
-                last_row = n_items // max_col
-                for col in range(n_items % max_col, max_col):
-                    spacer = QWidget()
-                    spacer.setFixedWidth(140)
-                    grid.addWidget(spacer, last_row, col)
-            # 壊れ動画グループUIにも「グループを非表示」ボタンを右横に追加
-            remain_label = QLabel(f"残り: {len(group)}ファイル")
-            remain_label.setStyleSheet("font-size:12px;color:#ff4444;font-weight:bold;margin-top:4px;")
-            hide_btn = QPushButton("グループを非表示")
-            hide_btn.setStyleSheet("font-size:12px;color:#888;background:#222;border-radius:8px;margin-left:12px;")
-            def hide_group_box():
-                parent_widget = group_box.parentWidget()
-                parent_layout = getattr(parent_widget, 'layout', None)
-                layout_obj = parent_layout() if callable(parent_layout) else None
-                from PyQt5.QtWidgets import QLayout
-                if isinstance(layout_obj, QLayout):
-                    layout_obj.removeWidget(group_box)
-                group_box.deleteLater()
-            hide_btn.clicked.connect(hide_group_box)
-            top_hbox = QHBoxLayout()
-            top_hbox.addWidget(remain_label)
-            top_hbox.addWidget(hide_btn)
-            top_hbox.addStretch(1)
-            vbox.addLayout(top_hbox)
-            vbox.addLayout(grid)
-            group_box.setLayout(vbox)
-        nav_hbox = QHBoxLayout()
-        prev_btn = QPushButton("前のページ")
-        next_btn = QPushButton("次のページ")
-        page_label = QLabel(f"{current_page[0]+1} / {total_pages}")
-        prev_btn.setEnabled(current_page[0] > 0)
-        next_btn.setEnabled(current_page[0] < total_pages-1)
-        def goto_prev():
-            if current_page[0] > 0:
-                progress = QProgressDialog("ページを読み込み中...", "キャンセル", 0, 100, dlg)
-                if _WINDOW_MODAL is not None:
-                    progress.setWindowModality(_WINDOW_MODAL)
-                progress.setMinimumDuration(500)
-                progress.setValue(0)
-                canceled = [False]
-                def on_cancel():
-                    canceled[0] = True
-                    # 全ワーカーにcancel通知
-                    for w in dlg.workers:
-                        if hasattr(w, 'cancel'):
-                            w.cancel()
-                progress.canceled.connect(on_cancel)
-                def async_update():
-                    try:
-                        if canceled[0]:
-                            return
-                        current_page[0] -= 1
-                        update_page(groups, group_checkboxes, delete_cb, progress)
-                        if not canceled[0]:
-                            progress.setValue(100)
-                    except Exception as e:
-                        print(f"ページ更新エラー: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        progress.cancel()
-                    finally:
-                        if progress and not progress.wasCanceled():
-                            progress.close()
-                QTimer.singleShot(100, async_update)
-        def goto_next():
-            if current_page[0] < total_pages-1:
-                progress = QProgressDialog("ページを読み込み中...", "キャンセル", 0, 100, dlg)
-                if _WINDOW_MODAL is not None:
-                    progress.setWindowModality(_WINDOW_MODAL)
-                progress.setMinimumDuration(500)
-                progress.setValue(0)
-                canceled = [False]
-                def on_cancel():
-                    canceled[0] = True
-                    for w in dlg.workers:
-                        if hasattr(w, 'cancel'):
-                            w.cancel()
-                progress.canceled.connect(on_cancel)
-                def async_update():
-                    try:
-                        if canceled[0]:
-                            return
-                        current_page[0] += 1
-                        update_page(groups, group_checkboxes, delete_cb, progress)
-                        if not canceled[0]:
-                            progress.setValue(100)
-                    except Exception as e:
-                        print(f"ページ更新エラー: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        progress.cancel()
-                    finally:
-                        if progress and not progress.wasCanceled():
-                            progress.close()
-                QTimer.singleShot(100, async_update)
-        prev_btn.clicked.connect(goto_prev)
-        next_btn.clicked.connect(goto_next)
-        nav_hbox.addWidget(prev_btn)
-        nav_hbox.addWidget(page_label)
-        nav_hbox.addWidget(next_btn)
-        vbox.addLayout(nav_hbox)
-        btns = QDialogButtonBox(QDialogButtonBox.Close)
-        btns.rejected.connect(dlg.reject)
-        vbox.addWidget(btns)
-        dlg.setLayout(vbox)
-    # --- 不要な重複・誤ったスコープのコードを削除 ---
-    # ダイアログ終了時に全スレッドを安全に停止
+            else:
+                pass
+    scroll.verticalScrollBar().valueChanged.connect(lambda _: update_visible_thumbnails())
+    scroll.horizontalScrollBar().valueChanged.connect(lambda _: update_visible_thumbnails())
+    QTimer.singleShot(100, update_visible_thumbnails)
+    layout = QVBoxLayout()
+    layout.addWidget(scroll)
+    dlg.setLayout(layout)
     def _cleanup_threads():
         for t in dlg.threads:
             if t.isRunning():
@@ -833,10 +776,6 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
         for w in getattr(dlg, 'workers', []):
             w.deleteLater()
     dlg.finished.connect(_cleanup_threads)
-    # ページング用のチェックボックスリストとdelete_cbを初期化
-    group_checkboxes = []
-    delete_cb = None  # 必要に応じて外部から渡す場合は引数で受け取る
-    update_page(broken_groups, group_checkboxes, delete_cb)
     dlg.exec_()
     for t in dlg.threads:
         t.wait()
@@ -910,6 +849,13 @@ def create_error_group_ui(error_files, get_thumbnail_for_file, detail_cb, delete
                 delete_cb(path)
                 if path in error_files:
                     error_files.remove(path)
+                norm_path = os.path.abspath(os.path.normpath(path))
+                # キャッシュ削除
+                if norm_path in cache_dict:
+                    del cache_dict[norm_path]
+                if norm_path in video_info_cache:
+                    del video_info_cache[norm_path]
+                # グループ自体が1件になった場合のみ group_box を削除
                 if len(error_files) <= 1:
                     parent_widget = group_box.parentWidget()
                     parent_layout = getattr(parent_widget, 'layout', None)
@@ -918,8 +864,10 @@ def create_error_group_ui(error_files, get_thumbnail_for_file, detail_cb, delete
                     if isinstance(layout_obj, QLayout):
                         layout_obj.removeWidget(group_box)
                     group_box.deleteLater()
-                # ページングUI対応: 削除後もページ位置を維持
-                # エラーグループUIはページング未実装だが、将来の拡張用に記載
+                # ページングUI未実装だが、複数削除時はQTimer.singleShot(100ms)で再描画遅延
+                else:
+                    from PyQt5.QtCore import QTimer
+                    QTimer.singleShot(100, lambda: group_box.update())
             except Exception as e:
                 print(f"[ERROR] エラーグループ削除失敗: {e}")
         del_btn.clicked.connect(lambda _, path=f: delete_and_update_error(path))
@@ -954,13 +902,11 @@ def create_error_group_ui(error_files, get_thumbnail_for_file, detail_cb, delete
             thread = QThread()
             worker = ThumbInfoWorker(f, cache_dict, video_info_cache, (140, 140), get_thumbnail_for_file)
             worker.moveToThread(thread)
-            def on_finished(path, pil_thumb, info_tuple, btn=thumb_btn, label=name_label, thread=thread, worker=worker):
+            def on_finished(path, pil_thumb, info_tuple, btn=thumb_btn, label=name_label):
                 if pil_thumb is not None:
                     btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
                 label.setText(f"{info_tuple[0]}{info_tuple[1]}")
                 thread.quit()
-                thread.wait()
-                thread.deleteLater()
                 worker.deleteLater()
             worker.finished.connect(on_finished)
             thread.started.connect(worker.run)
