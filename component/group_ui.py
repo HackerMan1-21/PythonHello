@@ -26,44 +26,50 @@ def group_by_phash_parallel(files, phash_func, chunksize=32):
     return results
 import atexit
 from PyQt5.QtWidgets import QApplication
+from component.thumbnail.thumbnail_util import ThumbnailCache
 def _save_thumb_cache_on_exit():
-    # サムネイルキャッシュ保存処理（必要に応じて修正）
     try:
-        from component.thumbnail.thumbnail_util import ThumbnailCache
-        # ここではグローバルなサムネイルキャッシュを保存する例
-        if hasattr(QApplication.instance(), 'thumb_cache'):
-            thumb_cache = QApplication.instance().thumb_cache
+        app = QApplication.instance()
+        if hasattr(app, 'thumb_cache'):
+            thumb_cache = app.thumb_cache
             if isinstance(thumb_cache, ThumbnailCache):
-                thumb_cache.save_to_disk()  # 必要に応じて実装
+                print(f"[DEBUG] キャッシュ保存: {thumb_cache.cache_file}")
+                thumb_cache.save_to_disk()
     except Exception as e:
         print(f"[WARN] サムネイルキャッシュ保存失敗: {e}")
 
-try:
-    app = QApplication.instance()
-    if app is not None:
-        app.aboutToQuit.connect(_save_thumb_cache_on_exit)
-        # --- 5. サムネイルキャッシュの定期自動保存タイマー ---
-        try:
-            from PyQt5.QtCore import QTimer
-            def _periodic_thumb_cache_save():
-                try:
-                    if hasattr(app, 'thumb_cache'):
-                        thumb_cache = app.thumb_cache
-                        from component.thumbnail.thumbnail_util import ThumbnailCache
-                        if isinstance(thumb_cache, ThumbnailCache):
-                            thumb_cache.save_to_disk()
-                except Exception as e:
-                    print(f"[WARN] サムネイルキャッシュ定期保存失敗: {e}")
-            timer = QTimer()
-            timer.setInterval(60000)  # 60秒ごと
-            timer.timeout.connect(_periodic_thumb_cache_save)
-            timer.start()
-            app._thumb_cache_autosave_timer = timer  # GC防止
-        except Exception as e:
-            print(f"[WARN] サムネイルキャッシュ自動保存タイマー起動失敗: {e}")
-except Exception:
-    # CLIやテスト時は無視
-    pass
+def _load_thumb_cache_on_start():
+    try:
+        app = QApplication.instance()
+        if app is not None:
+            if not hasattr(app, 'thumb_cache'):
+                thumb_cache = ThumbnailCache()
+                app.thumb_cache = thumb_cache
+                print(f"[DEBUG] キャッシュロード: {thumb_cache.cache_file}")
+    except Exception as e:
+        print(f"[WARN] サムネイルキャッシュロード失敗: {e}")
+
+_load_thumb_cache_on_start()
+app = QApplication.instance()
+if app is not None:
+    app.aboutToQuit.connect(_save_thumb_cache_on_exit)
+    try:
+        from PyQt5.QtCore import QTimer
+        def _periodic_thumb_cache_save():
+            try:
+                if hasattr(app, 'thumb_cache'):
+                    thumb_cache = app.thumb_cache
+                    if isinstance(thumb_cache, ThumbnailCache):
+                        thumb_cache.save_to_disk()
+            except Exception as e:
+                print(f"[WARN] サムネイルキャッシュ定期保存失敗: {e}")
+        timer = QTimer()
+        timer.setInterval(60000)
+        timer.timeout.connect(_periodic_thumb_cache_save)
+        timer.start()
+        app._thumb_cache_autosave_timer = timer
+    except Exception as e:
+        print(f"[WARN] サムネイルキャッシュ自動保存タイマー起動失敗: {e}")
 atexit.register(_save_thumb_cache_on_exit)
 """
 group_ui.py
@@ -138,7 +144,7 @@ def create_duplicate_group_ui(
     group_box.workers = workers
     # cache_dictは上で定義済み
     for idx, f in enumerate(group):
-        # cache_dictは関数先頭で定義済み
+        norm_path = os.path.abspath(os.path.normpath(f))
         thumb_btn = QPushButton()
         thumb_btn.setStyleSheet("background:transparent;border:0;padding:0;")
         thumb_btn.setFixedSize(140, 140)
@@ -214,29 +220,47 @@ def create_duplicate_group_ui(
         row = idx // max_col
         col = idx % max_col
         grid.addWidget(file_widget, row, col)
-        thumb_btn_map[f] = thumb_btn
-        size_label_map[f] = size_label
-        if (f not in cache_dict) or (f not in video_info_cache):
+        thumb_btn_map[norm_path] = thumb_btn
+        size_label_map[norm_path] = size_label
+        if (norm_path not in cache_dict) or (norm_path not in video_info_cache):
             thread = QThread()
-            worker = ThumbInfoWorker(f, cache_dict, video_info_cache, (140, 140), get_thumbnail_for_file)
+            worker = ThumbInfoWorker(norm_path, cache_dict, video_info_cache, (140, 140), get_thumbnail_for_file)
             worker.moveToThread(thread)
             def on_finished(path, pil_thumb, info_tuple, btn=thumb_btn, label=size_label, thread=thread, worker=worker):
-                if pil_thumb is not None:
-                    btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
-                label.setText(f"{info_tuple[0]}{info_tuple[1]}")
-                thread.quit()  # quitのみ。wait/deleteLaterは終了時にまとめて
-                worker.deleteLater()
+                from PyQt5.QtCore import QTimer
+                def update_ui():
+                    try:
+                        from PyQt5 import sip
+                        from component.thumbnail.thumbnail_util import pil_image_to_qpixmap, get_no_thumbnail_image
+                        norm_path = os.path.abspath(os.path.normpath(path))
+                        if sip.isdeleted(label) or sip.isdeleted(btn):
+                            print(f"[DEBUG] on_finished: UIオブジェクト削除済み {norm_path}")
+                            return
+                        # キャッシュ保存も正規化キーで
+                        cache_dict[norm_path] = pil_thumb
+                        video_info_cache[norm_path] = info_tuple
+                        if pil_thumb is not None:
+                            btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
+                        else:
+                            btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((140, 140)))))
+                        label.setText(f"{info_tuple[0]}{info_tuple[1]}")
+                        print(f"[DEBUG] on_finished: UI更新 {norm_path} {info_tuple}")
+                    except Exception as e:
+                        print(f"[WARN] on_finished UI更新失敗: {e}")
+                    thread.quit()  # quitのみ。wait/deleteLaterは終了時にまとめて
+                    worker.deleteLater()
+                QTimer.singleShot(0, update_ui)
             worker.finished.connect(on_finished)
             thread.started.connect(worker.run)
             thread.start()
             threads.append(thread)
             workers.append(worker)
         else:
-            pil_thumb = cache_dict[f]
-            btn = thumb_btn_map[f]
+            pil_thumb = cache_dict[norm_path]
+            btn = thumb_btn_map[norm_path]
             btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
-            size_str, duration_str = video_info_cache[f]
-            size_label_map[f].setText(f"サイズ: {size_str}{duration_str}")
+            size_str, duration_str = video_info_cache[norm_path]
+            size_label_map[norm_path].setText(f"サイズ: {size_str}{duration_str}")
     n_items = len(group)
     if n_items % max_col != 0:
         last_row = n_items // max_col
@@ -334,9 +358,18 @@ def show_face_grouping_dialog(parent, groups, move_selected_files_to_folder_func
                 worker = ThumbInfoWorker(f, thumb_cache, video_info_cache, (140, 140), get_thumbnail_for_file)
                 worker.moveToThread(thread)
                 def on_finished(path, pil_thumb, info_tuple, btn=thumb_btn, label=size_label, thread=thread, worker=worker):
-                    if pil_thumb is not None:
-                        btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
-                    label.setText(f"{info_tuple[0]}{info_tuple[1]}")
+                    try:
+                        from PyQt5 import sip
+                        from component.thumbnail.thumbnail_util import pil_image_to_qpixmap, get_no_thumbnail_image
+                        if sip.isdeleted(label) or sip.isdeleted(btn):
+                            return
+                        if pil_thumb is not None:
+                            btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb)))
+                        else:
+                            btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((140, 140)))))
+                        label.setText(f"{info_tuple[0]}{info_tuple[1]}")
+                    except Exception as e:
+                        print(f"[WARN] on_finished UI更新失敗: {e}")
                     thread.quit()  # quitのみ。wait/deleteLaterはダイアログ終了時にまとめて
                     worker.deleteLater()
                 worker.finished.connect(on_finished)
@@ -528,9 +561,18 @@ def show_broken_video_dialog(parent, broken_groups, run_mp4_repair, run_mp4_conv
                     worker = ThumbInfoWorker(f, cache_dict, video_info_cache, (140, 140), get_thumbnail_for_file)
                     worker.moveToThread(thread)
                     def on_finished(path, pil_thumb, info_tuple, btn=thumb_btn, label=size_label, thread=thread, worker=worker):
-                        if pil_thumb is not None:
-                            QTimer.singleShot(0, lambda: btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb))))
-                        label.setText(f"{info_tuple[0]}{info_tuple[1]}")
+                        try:
+                            from PyQt5 import sip
+                            from component.thumbnail.thumbnail_util import pil_image_to_qpixmap, get_no_thumbnail_image
+                            if sip.isdeleted(label) or sip.isdeleted(btn):
+                                return
+                            if pil_thumb is not None:
+                                QTimer.singleShot(0, lambda: btn.setIcon(QIcon(pil_image_to_qpixmap(pil_thumb))))
+                            else:
+                                QTimer.singleShot(0, lambda: btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((140, 140))))))
+                            label.setText(f"{info_tuple[0]}{info_tuple[1]}")
+                        except Exception as e:
+                            print(f"[WARN] on_finished UI更新失敗: {e}")
                         thread.quit()
                         worker.deleteLater()
                     worker.finished.connect(on_finished)
@@ -776,7 +818,8 @@ class ThumbInfoWorker(QObject):
 
     def __init__(self, path, thumb_cache, video_info_cache, thumb_size, get_thumbnail_for_file):
         super().__init__()
-        self.path = path
+        import os
+        self.path = os.path.abspath(os.path.normpath(path))  # パスを正規化
         self.thumb_cache = thumb_cache
         self.video_info_cache = video_info_cache
         self.thumb_size = thumb_size
@@ -787,65 +830,50 @@ class ThumbInfoWorker(QObject):
         self._canceled = True
 
     def run(self):
+        # すべての処理でキャンセルチェック
         if self._canceled:
+            print(f"[DEBUG] ThumbInfoWorker: キャンセル検知 {self.path}")
             return
-        # キャッシュの取得
+        # キャッシュ取得（正規化キーで統一）
         if isinstance(self.thumb_cache, ThumbnailCache):
             cache_dict = self.thumb_cache.cache
         elif isinstance(self.thumb_cache, dict):
             cache_dict = self.thumb_cache
         else:
             cache_dict = {}
-        # キャンセルチェック
-        if self._canceled:
-            return
-        # サムネイル取得
-        pil_thumb = cache_dict.get(self.path)
-        if pil_thumb is None and not self._canceled:
-            pil_thumb = self.get_thumbnail_for_file(self.path, self.thumb_size, cache=self.thumb_cache)
-            if not self._canceled and pil_thumb is not None:
-                cache_dict[self.path] = pil_thumb
-        # キャンセルチェック
-        if self._canceled:
-            return
-        # ファイル情報取得
-        if self.path in self.video_info_cache:
-            size_str, duration_str = self.video_info_cache[self.path]
-        else:
+        norm_path = os.path.abspath(os.path.normpath(self.path))
+        pil_thumb = cache_dict.get(norm_path)
+        info_tuple = ("", "")
+        # サムネイル未取得なら生成
+        if pil_thumb is None:
             try:
-                size = os.path.getsize(self.path)
-                size_mb = size / 1024 / 1024
-                size_str = f"{size_mb:.2f} MB"
-            except Exception:
-                size_str = "-"
-            # キャンセルチェック
-            if self._canceled:
-                return
-            ext = os.path.splitext(self.path)[1].lower()
-            video_exts = ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
-            duration_str = ""
-            if ext in video_exts and not self._canceled:
-                try:
-                    import cv2
-                    cap = cv2.VideoCapture(self.path)
-                    if cap.isOpened():
-                        frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-                        fps = cap.get(cv2.CAP_PROP_FPS)
-                        if fps > 0:
-                            seconds = int(frames / fps)
-                            m, s = divmod(seconds, 60)
-                            h, m = divmod(m, 60)
-                            if h > 0:
-                                duration_str = f" / {h}:{m:02d}:{s:02d}"
-                            else:
-                                duration_str = f" / {m}:{s:02d}"
-                        else:
-                            duration_str = ""
-                    cap.release()
-                except Exception:
-                    duration_str = ""
-            if not self._canceled:
-                self.video_info_cache[self.path] = (size_str, duration_str)
-        # キャンセルチェック
-        if not self._canceled:
-            self.finished.emit(self.path, pil_thumb, (size_str, duration_str))
+                if self._canceled:
+                    print(f"[DEBUG] ThumbInfoWorker: キャンセル検知(生成前) {norm_path}")
+                    return
+                result = self.get_thumbnail_for_file(norm_path, self.thumb_size)
+                # get_thumbnail_for_file の返り値がタプルかどうか判定
+                if isinstance(result, tuple) and len(result) == 2:
+                    pil_thumb, info_tuple = result
+                else:
+                    pil_thumb = result
+                    info_tuple = ("", "")
+                if self._canceled:
+                    print(f"[DEBUG] ThumbInfoWorker: キャンセル検知(生成後) {norm_path}")
+                    return
+                # 失敗時は None
+                if pil_thumb is not None:
+                    cache_dict[norm_path] = pil_thumb
+                # info_tuple もキャッシュ（動画情報など）
+                self.video_info_cache[norm_path] = info_tuple
+                print(f"[DEBUG] ThumbInfoWorker: サムネイル生成完了 {norm_path} {info_tuple}")
+            except Exception as e:
+                print(f"[ERROR] ThumbInfoWorker サムネイル生成例外: {norm_path} - {e}")
+        else:
+            # 既存キャッシュから info_tuple を取得
+            info_tuple = self.video_info_cache.get(norm_path, ("", ""))
+        if self._canceled:
+            print(f"[DEBUG] ThumbInfoWorker: キャンセル検知(emit前) {norm_path}")
+            return
+        # UIスレッドで安全に finished.emit を呼ぶ
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(0, lambda: self.finished.emit(norm_path, pil_thumb, info_tuple))

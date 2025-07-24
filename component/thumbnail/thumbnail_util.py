@@ -20,6 +20,17 @@ def get_thumb_cache_file(folder):
     return f".thumb_cache_{h}.pkl"
 
 class ThumbnailCache:
+    def save_to_disk(self):
+        """
+        キャッシュ内容をディスクに保存する（pickle形式）。
+        """
+        with self.lock:
+            try:
+                with open(self.cache_file, "wb") as f:
+                    pickle.dump(self.cache, f)
+                print(f"[DEBUG] ThumbnailCache: キャッシュ保存完了 {self.cache_file}")
+            except Exception as e:
+                print(f"[ERROR] ThumbnailCache: キャッシュ保存失敗 {self.cache_file} - {e}")
     def __init__(self, folder=None, max_items=25000, max_bytes=3*1024*1024*1024):
         self.folder = folder
         self.cache_file = get_thumb_cache_file(folder)
@@ -127,7 +138,11 @@ def get_image_thumbnail(filepath, size=(180,180), cache=None, defer_queue=None, 
     if cache is not None:
         thumb = cache.get(key)
         if thumb is not None:
-            return thumb
+            try:
+                size_str = f"{os.path.getsize(filepath)//1024}KB"
+            except Exception:
+                size_str = "?KB"
+            return thumb, (size_str, "")
     try:
         img = Image.open(filepath).convert("RGB")
         img.thumbnail(size, resample=Resampling.LANCZOS)
@@ -136,9 +151,13 @@ def get_image_thumbnail(filepath, size=(180,180), cache=None, defer_queue=None, 
         bg.paste(img, offset)
         if cache is not None:
             cache.set(key, bg.copy())
-        return bg
+        try:
+            size_str = f"{os.path.getsize(filepath)//1024}KB"
+        except Exception:
+            size_str = "?KB"
+        return bg, (size_str, "")
     except Exception:
-        return None
+        return None, ("?KB", "")
 
 def get_video_thumbnail(filepath, size=(180,180), error_files=None, cache=None, defer_queue=None):
     filepath = os.path.abspath(os.path.normpath(filepath))
@@ -146,15 +165,38 @@ def get_video_thumbnail(filepath, size=(180,180), error_files=None, cache=None, 
     if cache is not None:
         thumb = cache.get(key)
         if thumb is not None:
-            return thumb
+            try:
+                import cv2
+                cap = cv2.VideoCapture(filepath)
+                duration = ""
+                if cap.isOpened():
+                    frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+                    if fps > 0:
+                        duration_sec = int(frames / fps)
+                        duration = f" ({duration_sec//60}:{duration_sec%60:02d})"
+                cap.release()
+                size_str = f"{os.path.getsize(filepath)//1024}KB"
+            except Exception:
+                size_str = "?KB"
+                duration = ""
+            return thumb, (size_str, duration)
     try:
+        import cv2
         cap = cv2.VideoCapture(filepath)
         ret, frame = cap.read()
+        duration = ""
+        if cap.isOpened():
+            frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if fps > 0:
+                duration_sec = int(frames / fps)
+                duration = f" ({duration_sec//60}:{duration_sec%60:02d})"
         cap.release()
         if not ret:
             if error_files is not None:
                 error_files.append(f"{filepath} : 動画フレーム取得失敗")
-            return None
+            return None, ("?KB", duration)
         img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(img)
         pil_img.thumbnail(size, resample=Resampling.LANCZOS)
@@ -163,20 +205,35 @@ def get_video_thumbnail(filepath, size=(180,180), error_files=None, cache=None, 
         bg.paste(pil_img, offset)
         if cache is not None:
             cache.set(key, bg.copy())
-        return bg
+        try:
+            size_str = f"{os.path.getsize(filepath)//1024}KB"
+        except Exception:
+            size_str = "?KB"
+        return bg, (size_str, duration)
     except Exception as e:
         if error_files is not None:
             error_files.append(f"{filepath} : {e}")
-        return None
+        return None, ("?KB", "")
 
 def get_thumbnail_for_file(filepath, size=(180, 90), error_files=None, cache=None, defer_queue=None):
     filepath = os.path.abspath(os.path.normpath(filepath))
     ext = os.path.splitext(filepath)[1].lower()
     video_exts = ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
-    if ext in video_exts:
-        return get_video_thumbnail(filepath, size, error_files, cache, None)
-    else:
-        return get_image_thumbnail(filepath, size, cache, None, is_video=False, error_files=error_files)
+    try:
+        if ext in video_exts:
+            thumb, info_tuple = get_video_thumbnail(filepath, size, error_files, cache, None)
+        else:
+            thumb, info_tuple = get_image_thumbnail(filepath, size, cache, None, is_video=False, error_files=error_files)
+        if thumb is None:
+            print(f"[DEBUG] サムネイル生成失敗: {filepath}")
+            if error_files is not None:
+                error_files.append(f"{filepath} : サムネイル生成失敗")
+        return thumb, info_tuple
+    except Exception as e:
+        print(f"[ERROR] get_thumbnail_for_file例外: {filepath} - {e}")
+        if error_files is not None:
+            error_files.append(f"{filepath} : 例外 {e}")
+        return None, ("?KB", "")
 
 # サムネイル生成ワーカー（PIL.Imageのみ扱う。Qtオブジェクトは絶対扱わない）
 class ThumbnailWorker(threading.Thread):
