@@ -144,7 +144,7 @@ def get_features_with_cache(filepath, calc_func, folder=None):
                 time.sleep(0.2)
     return result
 
-def group_by_phash(file_hashes, threshold=8):
+def group_by_phash(file_hashes, threshold=5):
     groups = []
     used = set()
     for i, (f1, h1) in enumerate(file_hashes):
@@ -209,7 +209,7 @@ def find_group_for_index(args):
         return set(group)
     return None
 
-def group_by_phash_parallel(file_hashes, threshold=12, max_workers=None):
+def group_by_phash_parallel(file_hashes, threshold=5, max_workers=None):
     args_list = [(i, fh, file_hashes, threshold) for i, fh in enumerate(file_hashes)]
     group_candidates = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=12) as executor:
@@ -256,9 +256,9 @@ def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None,
     # グループ化
     valid_file_hashes = [(f, h) for f, h in file_hashes if h is not None]
     if parallel and len(valid_file_hashes) > 100:
-        groups = group_by_phash_parallel(valid_file_hashes)
+        groups = group_by_phash_parallel(valid_file_hashes, threshold=5)
     else:
-        groups = group_by_phash(valid_file_hashes)
+        groups = group_by_phash(valid_file_hashes, threshold=5)
     # エラー（未分類）ファイルを一番下に追加
     if error_files:
         groups.append(error_files)
