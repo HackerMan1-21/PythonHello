@@ -55,6 +55,7 @@ from component.thumbnail.thumbnail_util import ThumbnailCache, get_thumbnail_for
 from .gui_thumbnail import ThumbnailListModel
 from .gui_dialogs import show_progress_dialog
 from .gui_utils import ThumbnailDelegate
+from .mode_selection_dialog import ModeSelectionDialog
 
 print("DEBUG: gui_main.py loaded from", __file__)
 
@@ -99,7 +100,7 @@ class DuplicateFinderGUI(QWidget):
         self.thumb_queue = Queue()
         self.thumb_cache = None
         self.thumb_widget_map = {}
-        self.thumb_workers = start_thumbnail_workers(self.thumb_queue, self.on_thumb_update, cache=None)
+        self.thumb_workers = start_thumbnail_workers(self.thumb_queue, self.on_thumb_update)
         self.init_ui()
         self.worker = None  # スレッド初期化
         self.cancel_requested = False
@@ -203,6 +204,11 @@ class DuplicateFinderGUI(QWidget):
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("font-size:15px;color:#00ffe7;font-weight:bold;margin-bottom:6px;")
         layout.addWidget(self.status_label)
+        
+        # --- 進捗詳細ラベル（残りファイル数・推定時間） ---
+        self.progress_detail_label = QLabel("")
+        self.progress_detail_label.setStyleSheet("font-size:13px;color:#00ff99;margin-bottom:4px;")
+        layout.addWidget(self.progress_detail_label)
         # --- 進捗バー ---
         self.progress = QProgressBar()
         self.progress.setValue(0)
@@ -310,10 +316,20 @@ class DuplicateFinderGUI(QWidget):
         if folder:
             self.folder_label.setText(folder)
             self.load_thumb_cache(folder)
-            files = get_image_and_video_files(folder)
-            self.clear_content()
-            self.processFiles(files)
-            self.find_duplicates()  # フォルダ選択時に自動で重複チェックを実行
+            
+            # 処理モード選択ダイアログ
+            mode_dialog = ModeSelectionDialog(self)
+            if mode_dialog.exec_() == QDialog.Accepted:
+                if mode_dialog.selected_mode == "duplicate":
+                    files = get_image_and_video_files(folder)
+                    self.clear_content()
+                    self.processFiles(files)
+                    self.find_duplicates()
+                elif mode_dialog.selected_mode == "face":
+                    self.face_grouping_and_move()
+            else:
+                # キャンセルされた場合はフォルダラベルをリセット
+                self.folder_label.setText("フォルダ未選択")
 
     def load_thumb_cache(self, folder=None):
         print(f"[DEBUG] load_thumb_cache: folder={folder}")
@@ -444,28 +460,36 @@ class DuplicateFinderGUI(QWidget):
         self.cancel_requested = False
         start_time = time.time()
         folder = self.folder_label.text()
+        
+        def progress_callback(current, total):
+            if self.cancel_requested:
+                return
+            elapsed = time.time() - start_time
+            if current > 0:
+                eta = (elapsed / current) * (total - current)
+                remain = total - current
+            else:
+                eta = 0
+                remain = total
+            
+            # 進捗詳細情報を更新
+            progress_text = f"処理中: {current}/{total} ファイル"
+            if eta > 0:
+                eta_min = int(eta // 60)
+                eta_sec = int(eta % 60)
+                progress_text += f" | 残り時間: {eta_min}:{eta_sec:02d}"
+            
+            QTimer.singleShot(0, lambda: (
+                self.progress.setValue(int(current/total*100)),
+                self.progress_detail_label.setText(progress_text)
+            ))
+        
         def worker():
             print(f"[DEBUG] find_duplicates.worker: folder={folder}")
-            duplicates, _ = find_duplicates_in_folder(folder, parallel=True)
+            duplicates, _ = find_duplicates_in_folder(folder, progress_callback=progress_callback, parallel=True)
             print(f"[DEBUG] find_duplicates.worker: duplicates found={len(duplicates)}")
-            total = len(duplicates)
-            last_update = time.time()
-            elapsed = 0
-            eta = 0
-            remain = total
-            for idx, group in enumerate(duplicates):
-                if self.cancel_requested:
-                    print("[DEBUG] find_duplicates.worker: cancel requested")
-                    break
-                elapsed = time.time() - start_time
-                eta = (elapsed / (idx + 1)) * (total - (idx + 1)) if idx > 0 else 0
-                remain = total - (idx + 1)
-                # 進捗・経過・ETAを毎回UIスレッドで更新
-                QTimer.singleShot(0, lambda v=idx+1, e=elapsed, t=eta: update_progress(self.progress, v, self.status_label, self.eta_label, e, t))
-                last_update = time.time()
-            print("[DEBUG] find_duplicates.worker: QTimer.singleShot before update_ui")
-            # emit時に最新の値を渡す
-            self.update_ui_signal.emit(duplicates, folder, elapsed, eta, remain)
+            elapsed = time.time() - start_time
+            self.update_ui_signal.emit(duplicates, folder, elapsed, 0, 0)
             print("[DEBUG] find_duplicates.worker: signal emitted after update_ui")
         threading.Thread(target=worker).start()
 
@@ -560,9 +584,7 @@ class DuplicateFinderGUI(QWidget):
                     group_box.setStyleSheet("margin-bottom: 24px; border: 2px solid #00ffe7; border-radius: 12px; padding: 8px;")
                 self.content_layout.addWidget(group_box)
                 for file_path in group:
-                    ext = os.path.splitext(file_path)[1].lower()
-                    is_video = ext in ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
-                    self.thumb_queue.put((file_path, (180, 180), is_video, None))
+                    self.thumb_queue.put((file_path, (180, 180)))
             except Exception as e:
                 print(f"[DEBUG] show_current_page: group UI exception: {e}")
         # ページラベル・ボタン状態
