@@ -27,7 +27,7 @@ def create_prime_group_ui(
             background: #141414;
             border: none;
             margin: 0px;
-            padding: 5px;
+            padding: 0px;
         }
     """)
     
@@ -37,9 +37,9 @@ def create_prime_group_ui(
     
     # グリッド
     grid = QGridLayout()
-    grid.setHorizontalSpacing(3)
-    grid.setVerticalSpacing(3)
-    grid.setContentsMargins(5, 5, 5, 5)
+    grid.setHorizontalSpacing(0)
+    grid.setVerticalSpacing(0)
+    grid.setContentsMargins(0, 0, 0, 0)
     
     max_col = 4
     
@@ -64,8 +64,8 @@ def create_prime_group_ui(
         """)
         
         card_hbox = QHBoxLayout()
-        card_hbox.setSpacing(8)
-        card_hbox.setContentsMargins(4, 4, 4, 4)
+        card_hbox.setSpacing(0)
+        card_hbox.setContentsMargins(0, 0, 0, 0)
         
         # サムネイル（16:9比率、コンパクト）
         thumb_btn = QPushButton()
@@ -180,7 +180,7 @@ def create_prime_group_ui(
         
         # ボタン（大きく押しやすく）
         btn_hbox = QHBoxLayout()
-        btn_hbox.setSpacing(5)
+        btn_hbox.setSpacing(0)
         btn_hbox.setContentsMargins(0, 0, 0, 0)
         
         open_btn = QPushButton("📂 開く")
@@ -257,7 +257,7 @@ def create_prime_group_ui(
         
         info_vbox = QVBoxLayout()
         info_vbox.setSpacing(0)
-        info_vbox.setContentsMargins(15, 15, 15, 15)
+        info_vbox.setContentsMargins(0, 0, 0, 0)
         info_vbox.setAlignment(Qt.AlignTop)
         
         from PyQt5.QtWidgets import QSpacerItem
