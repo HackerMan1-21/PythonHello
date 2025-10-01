@@ -124,9 +124,11 @@ def create_duplicate_group_ui(
 ) -> QGroupBox:
     from PyQt5.QtWidgets import QScrollArea
     group_box = QGroupBox(f"重複グループ（残り: {len(group)}ファイル）")
+    group_box.setFlat(True)
     grid = QGridLayout()
-    grid.setHorizontalSpacing(12)
-    grid.setVerticalSpacing(16)
+    grid.setHorizontalSpacing(8)
+    grid.setVerticalSpacing(8)
+    grid.setContentsMargins(8, 8, 8, 8)
     max_col = 4
     if len(group) < max_col:
         max_col = len(group)
@@ -149,22 +151,24 @@ def create_duplicate_group_ui(
         norm_path = os.path.abspath(os.path.normpath(f))
         thumb_btn = QPushButton()
         thumb_btn.setStyleSheet("background:transparent;border:0;padding:0;")
-        thumb_btn.setFixedSize(140, 140)
+        thumb_btn.setFixedSize(200, 200)
         from component.thumbnail.thumbnail_util import get_no_thumbnail_image, pil_image_to_qpixmap
-        thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((140, 140)))));
-        thumb_btn.setIconSize(QSize(140, 140))
+        thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((200, 200)))))
+        thumb_btn.setIconSize(QSize(200, 200))
         thumb_btn.setStyleSheet("background:transparent;border:2px solid #00ffe7;border-radius:10px;")
         thumb_btn.clicked.connect(lambda _, path=f: detail_cb(parent, path))
         info_vbox = QVBoxLayout()
-        info_vbox.setSpacing(4)
+        info_vbox.setSpacing(8)
         info_vbox.setContentsMargins(0, 0, 0, 0)
         fname = os.path.basename(f)
         name_label = QLabel(fname)
-        name_label.setStyleSheet("font-size:12px;color:#00ffe7;font-weight:bold;max-width:140px;")
-        name_label.setMaximumWidth(140)
+        name_label.setStyleSheet("font-size:12px;color:#00ffe7;font-weight:bold;max-width:200px;background:rgba(0,0,0,0.4);padding:6px;border-radius:6px;")
+        name_label.setMaximumWidth(200)
+        name_label.setFixedHeight(30)
         size_label = QLabel("取得中...")
-        size_label.setStyleSheet("font-size:11px;color:#00ff99;max-width:140px;")
-        size_label.setMaximumWidth(140)
+        size_label.setStyleSheet("font-size:11px;color:#00ff99;max-width:200px;background:rgba(0,0,0,0.3);padding:4px;border-radius:4px;")
+        size_label.setMaximumWidth(200)
+        size_label.setFixedHeight(25)
         size_label.setWordWrap(True)
         folder_path = os.path.dirname(f)
         folder_parts = folder_path.replace("\\", "/").rstrip("/").split("/")
@@ -179,8 +183,9 @@ def create_duplicate_group_ui(
         path_label.setMaximumWidth(140)
         path_label.setWordWrap(True)
         path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        open_folder_btn = QPushButton("フォルダを開く")
-        open_folder_btn.setStyleSheet("font-size:11px;color:#00ff99;border:1px solid #00ff99;border-radius:6px;")
+        open_folder_btn = QPushButton("📁 フォルダ")
+        open_folder_btn.setStyleSheet("font-size:11px;color:#00ff99;background:rgba(0,255,153,0.15);border:2px solid #00ff99;border-radius:6px;padding:8px;font-weight:bold;")
+        open_folder_btn.setFixedHeight(35)
         def open_folder(path: str) -> None:
             import os
             import subprocess
@@ -211,9 +216,9 @@ def create_duplicate_group_ui(
                 else:
                     QMessageBox.warning(None, "フォルダを開く", f"フォルダが存在しません: {parent_folder}")
         open_folder_btn.clicked.connect(lambda _, path=f: open_folder(path))
-        del_btn = QPushButton("削除")
-        del_btn.setStyleSheet("font-size:12px;color:#ff00c8;max-width:140px;")
-        del_btn.setFixedWidth(140)
+        del_btn = QPushButton("🗑️ 削除")
+        del_btn.setStyleSheet("font-size:11px;color:#ff00c8;background:rgba(255,0,200,0.15);border:2px solid #ff00c8;border-radius:6px;padding:8px;font-weight:bold;")
+        del_btn.setFixedHeight(35)
         def delete_and_update(path):
             try:
                 delete_cb(path)
@@ -248,10 +253,10 @@ def create_duplicate_group_ui(
                 print(f"[ERROR] 削除失敗: {e}")
         del_btn.clicked.connect(lambda _, path=f: delete_and_update(path))
         btn_hbox = QHBoxLayout()
-        btn_hbox.setSpacing(8)
+        btn_hbox.setSpacing(5)
         btn_hbox.setContentsMargins(0, 0, 0, 0)
-        open_folder_btn.setFixedWidth(80)
-        del_btn.setFixedWidth(80)
+        open_folder_btn.setFixedWidth(95)
+        del_btn.setFixedWidth(95)
         btn_hbox.addWidget(open_folder_btn)
         btn_hbox.addWidget(del_btn)
         info_vbox.addWidget(name_label)
@@ -260,31 +265,40 @@ def create_duplicate_group_ui(
         info_vbox.addLayout(btn_hbox)
         info_widget = QWidget()
         info_widget.setLayout(info_vbox)
-        info_widget.setFixedWidth(140)
+        info_widget.setFixedWidth(200)
+        info_widget.setFixedHeight(200)
         hbox = QHBoxLayout()
         hbox.setSpacing(0)
         hbox.setContentsMargins(0, 0, 0, 0)
+        hbox.setSpacing(2)
         hbox.addWidget(thumb_btn)
         hbox.addWidget(info_widget)
         file_widget = QWidget()
         file_widget.setLayout(hbox)
+        file_widget.setFixedHeight(200)
+        file_widget.setContentsMargins(0, 0, 0, 0)
         row = idx // max_col
         col = idx % max_col
         grid.addWidget(file_widget, row, col)
         thumb_btn_map[norm_path] = thumb_btn
         size_label_map[norm_path] = size_label
         thumb_btns.append((thumb_btn, norm_path))
+        
+        # 重要: thumb_widget_mapに登録（GUIからのサムネイル更新用）
+        if thumb_widget_map is not None:
+            thumb_widget_map[norm_path] = thumb_btn
     n_items = len(group)
     if n_items % max_col != 0:
         last_row = n_items // max_col
         for col in range(n_items % max_col, max_col):
             spacer = QWidget()
-            spacer.setFixedWidth(140)
+            spacer.setFixedWidth(180)
+            spacer.setFixedHeight(180)
             grid.addWidget(spacer, last_row, col)
     remain_label = QLabel(f"残り: {len(group)}ファイル")
-    remain_label.setStyleSheet("font-size:12px;color:#00ffe7;font-weight:bold;margin-top:4px;")
+    remain_label.setStyleSheet("font-size:12px;color:#00ffe7;font-weight:bold;margin:0;padding:0;")
     hide_btn = QPushButton("グループを非表示")
-    hide_btn.setStyleSheet("font-size:12px;color:#888;background:#222;border-radius:8px;margin-left:12px;")
+    hide_btn.setStyleSheet("font-size:12px;color:#888;background:#222;border-radius:8px;margin:0;padding:2px 8px;")
     def hide_group_box():
         # キャッシュ削除
         for f in group:
@@ -302,10 +316,14 @@ def create_duplicate_group_ui(
         group_box.deleteLater()
     hide_btn.clicked.connect(hide_group_box)
     top_hbox = QHBoxLayout()
+    top_hbox.setSpacing(4)
+    top_hbox.setContentsMargins(4, 2, 4, 2)
     top_hbox.addWidget(remain_label)
     top_hbox.addWidget(hide_btn)
     top_hbox.addStretch(1)
     vbox = QVBoxLayout()
+    vbox.setSpacing(2)
+    vbox.setContentsMargins(4, 2, 4, 2)
     vbox.addLayout(top_hbox)
     vbox.addLayout(grid)
     grid_widget = QWidget()
@@ -373,8 +391,14 @@ def create_duplicate_group_ui(
     QTimer.singleShot(100, update_visible_thumbnails)
     # group_boxのレイアウトにscrollを追加
     layout = QVBoxLayout()
+    layout.setSpacing(2)
+    layout.setContentsMargins(2, 2, 2, 2)
     layout.addWidget(scroll)
     group_box.setLayout(layout)
+    group_box.setContentsMargins(4, 4, 4, 4)
+    group_box.setStyleSheet("QGroupBox { margin:2px; padding:2px; } QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 2px; margin-top: 0px; }")
+    scroll.setStyleSheet("QScrollArea { margin:2px; padding:2px; }")
+    grid_widget.setContentsMargins(4, 4, 4, 4)
     parent_dialog = parent
     if parent_dialog is not None and hasattr(parent_dialog, 'finished'):
         def _cleanup_threads():

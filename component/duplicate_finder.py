@@ -43,49 +43,30 @@ def get_image_phash(filepath, folder=None, cache=None):
     # print(f"[pHash cache (get_features_with_cache)] {filepath} -> HIT" if val is not None else f"[pHash cache (get_features_with_cache)] {filepath} -> MISS")
     return val
 
-def get_video_phash(filepath, frame_count=7, folder=None, cache=None):
+def get_video_phash(filepath, frame_count=3, folder=None, cache=None):
     filepath = normalize_path(filepath)
     def calc_func(path):
-        cap = cv2.VideoCapture(path)
-        length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        hashes = []
-        if length == 0 or frame_count == 0:
-            cap.release()
-            return None
-        indices = set([0, length-1, length//2])
-        if frame_count > 3:
-            for i in range(frame_count-3):
-                idx = int(length * (i+1)/(frame_count-2))
-                indices.add(min(max(0, idx), length-1))
-        indices = sorted(indices)
-        for frame_no in indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
+        try:
+            cap = cv2.VideoCapture(path)
+            # 最初のフレームのみ使用（高速化）
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             ret, frame = cap.read()
-            if not ret:
-                continue
-            try:
+            cap.release()
+            
+            if ret:
                 pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                hash_val = imagehash.phash(pil_img)
-                hashes.append(hash_val)
-            except Exception:
-                continue
-        cap.release()
-        if not hashes:
-            return None
-        # 動画pHashはフレームごとのpHashの平均値
-        arr = np.array([h.hash for h in hashes])
-        avg_hash = (arr.mean(axis=0) > 0.5).astype(np.uint8)
-        return imagehash.ImageHash(avg_hash)
+                return imagehash.phash(pil_img)
+        except Exception:
+            pass
+        return None
+    
     if cache is not None:
         if filepath in cache:
-            print(f"[pHash cache HIT] {filepath}")
             return cache[filepath]
         val = calc_func(filepath)
-        print(f"[pHash cache MISS] {filepath}")
         cache[filepath] = val
         return val
     val = get_features_with_cache(filepath, calc_func, folder)
-    # print(f"[pHash cache (get_features_with_cache)] {filepath} -> HIT" if val is not None else f"[pHash cache (get_features_with_cache)] {filepath} -> MISS")
     return val
 
 def get_cache_files(folder):
@@ -153,22 +134,10 @@ def group_by_phash(file_hashes, threshold=5):
         group = [f1]
         for j, (f2, h2) in enumerate(file_hashes):
             if i != j and f2 not in used and h2 is not None:
-                if isinstance(h1, list) and isinstance(h2, list):
-                    minlen = min(len(h1), len(h2))
+                # ImageHashオブジェクトのみ処理（リスト型は廃止）
+                if hasattr(h1, '__sub__') and hasattr(h2, '__sub__'):
                     try:
-                        dist = sum(h1[k] - h2[k] if hasattr(h1[k], '__sub__') else abs(int(h1[k]) - int(h2[k])) for k in range(minlen))
-                        dist = abs(dist)
-                    except Exception:
-                        continue
-                    if dist < threshold * minlen:
-                        group.append(f2)
-                        used.add(f2)
-                elif not isinstance(h1, list) and not isinstance(h2, list):
-                    try:
-                        if hasattr(h1, '__sub__') and hasattr(h2, '__sub__'):
-                            diff = abs(h1 - h2)
-                        else:
-                            diff = abs(int(h1) - int(h2))
+                        diff = abs(h1 - h2)
                         if diff < threshold:
                             group.append(f2)
                             used.add(f2)
@@ -186,21 +155,10 @@ def find_group_for_index(args):
     group = [f1]
     for j, (f2, h2) in enumerate(file_hashes):
         if i != j and h2 is not None:
-            if isinstance(h1, list) and isinstance(h2, list):
-                minlen = min(len(h1), len(h2))
+            # ImageHashオブジェクトのみ処理
+            if hasattr(h1, '__sub__') and hasattr(h2, '__sub__'):
                 try:
-                    dist = sum(h1[k] - h2[k] if hasattr(h1[k], '__sub__') else abs(int(h1[k]) - int(h2[k])) for k in range(minlen))
-                    dist = abs(dist)
-                except Exception:
-                    continue
-                if dist < threshold * minlen:
-                    group.append(f2)
-            elif not isinstance(h1, list) and not isinstance(h2, list):
-                try:
-                    if hasattr(h1, '__sub__') and hasattr(h2, '__sub__'):
-                        diff = abs(h1 - h2)
-                    else:
-                        diff = abs(int(h1) - int(h2))
+                    diff = abs(h1 - h2)
                     if diff < threshold:
                         group.append(f2)
                 except Exception:
@@ -210,12 +168,22 @@ def find_group_for_index(args):
     return None
 
 def group_by_phash_parallel(file_hashes, threshold=5, max_workers=None):
+    if len(file_hashes) < 200:
+        return group_by_phash(file_hashes, threshold)
+    
+    if max_workers is None:
+        max_workers = min(os.cpu_count() or 4, len(file_hashes) // 50)
+    
     args_list = [(i, fh, file_hashes, threshold) for i, fh in enumerate(file_hashes)]
     group_candidates = []
-    with concurrent.futures.ProcessPoolExecutor(max_workers=12) as executor:
-        for res in executor.map(find_group_for_index, args_list, chunksize=128):
+    
+    optimal_chunksize = max(1, len(file_hashes) // (max_workers * 4))
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for res in executor.map(find_group_for_index, args_list, chunksize=optimal_chunksize):
             if res:
                 group_candidates.append(res)
+    
     final_groups = []
     used = set()
     for group in group_candidates:
@@ -245,7 +213,7 @@ def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None,
         if ext in image_exts:
             h = get_image_phash(f, folder)
         else:
-            h = get_video_phash(f, 7, folder)
+            h = get_video_phash(f, 3, folder)  # デフォルト値と統一
         file_hashes.append((f, h))
         if progress_callback is not None:
             progress_callback(idx+1, total)

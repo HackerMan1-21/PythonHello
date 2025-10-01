@@ -16,7 +16,7 @@ import hashlib
 from component.utils.file_util import normalize_path, collect_files, move_to_trash, shutil_move
 from component.utils.cache_util import save_cache, load_cache
 from component.gui.gui_main import DuplicateFinderGUI
-from component.thumbnail.thumbnail_util import get_thumb_cache_file, load_thumb_cache, save_thumb_cache, get_image_thumbnail, get_video_thumbnail, ThumbnailWorker
+from component.thumbnail.thumbnail_util import load_thumb_cache, save_thumb_cache
 from component.duplicate_finder import get_image_phash, get_video_phash, get_cache_files, get_features_with_cache, group_by_phash
 from component.ai.face_grouping import get_face_encoding, get_video_face_encoding, group_by_face
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, QListWidget, QMessageBox, QScrollArea, QGroupBox, QProgressBar, QInputDialog, QDialog, QGridLayout, QLineEdit, QDialogButtonBox, QListWidgetItem, QProgressDialog, QCheckBox)
@@ -94,7 +94,7 @@ if __name__ == "__main__":
             mainWin.thumb_cache = load_thumb_cache()
             def on_thumbnail_ready(path, pil_img):
                 QTimer.singleShot(0, lambda: mainWin.update_thumbnail_ui(path, pil_img) if hasattr(mainWin, 'update_thumbnail_ui') else None)
-            mainWin.thumb_workers = start_thumbnail_workers(mainWin.thumb_queue, on_thumbnail_ready)
+            mainWin.thumb_workers = start_thumbnail_workers(mainWin.thumb_queue, on_thumbnail_ready, cache=mainWin.thumb_cache)
             # --- 終了時にワーカーを安全に停止 ---
             def _cleanup_workers():
                 for _ in mainWin.thumb_workers:

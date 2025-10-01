@@ -1,24 +1,89 @@
 import os
 import threading
-import pickle
+import sqlite3
+import hashlib
 from PIL import Image, ImageDraw
 from PIL.Image import Resampling
 import cv2
-from PyQt5.QtGui import QPixmap, QImage
-from PyQt5.QtCore import QThread, QCoreApplication
+from PyQt5.QtGui import QPixmap, QImage, QIcon
+from PyQt5.QtCore import QThread, QCoreApplication, QTimer, QSize
 import time
+import queue
+import concurrent.futures
+import multiprocessing
 
-def get_thumb_cache_file(folder):
-    if folder is None:
-        folder = 'global'
-    folder = os.path.abspath(folder)
-    import hashlib
-    h = hashlib.sha1(folder.encode('utf-8')).hexdigest()[:12]
-    return f".thumb_cache_{h}.pkl"
-
-class ThumbnailCache:
-    def __init__(self):
-        self.cache = {}
+class FastCache:
+    def __init__(self, cache_dir=".thumb_cache"):
+        self.cache_dir = cache_dir
+        os.makedirs(cache_dir, exist_ok=True)
+        self.db_path = os.path.join(cache_dir, "thumbs.db")
+        self._init_db()
+        self.memory_cache = {}
+        self.cache = self.memory_cache  # 後方互換性
+        self.max_memory = 1000
+    
+    def _init_db(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""CREATE TABLE IF NOT EXISTS thumbs (
+                path_hash TEXT PRIMARY KEY,
+                path TEXT,
+                mtime REAL,
+                data BLOB
+            )""")
+    
+    def _get_hash(self, path):
+        return hashlib.md5(path.encode()).hexdigest()
+    
+    def get(self, path):
+        if path in self.memory_cache:
+            return self.memory_cache[path]
+        
+        try:
+            mtime = os.path.getmtime(path)
+            path_hash = self._get_hash(path)
+            
+            with sqlite3.connect(self.db_path) as conn:
+                row = conn.execute(
+                    "SELECT data FROM thumbs WHERE path_hash=? AND mtime=?",
+                    (path_hash, mtime)
+                ).fetchone()
+                
+                if row:
+                    import pickle
+                    thumb = pickle.loads(row[0])
+                    if len(self.memory_cache) < self.max_memory:
+                        self.memory_cache[path] = thumb
+                    return thumb
+        except:
+            pass
+        return None
+    
+    def set(self, path, thumb):
+        try:
+            mtime = os.path.getmtime(path)
+            path_hash = self._get_hash(path)
+            
+            import pickle
+            data = pickle.dumps(thumb)
+            
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO thumbs (path_hash, path, mtime, data) VALUES (?, ?, ?, ?)",
+                    (path_hash, path, mtime, data)
+                )
+            
+            if len(self.memory_cache) < self.max_memory:
+                self.memory_cache[path] = thumb
+        except:
+            pass
+    
+    def clear(self):
+        self.memory_cache.clear()
+        try:
+            os.remove(self.db_path)
+            self._init_db()
+        except:
+            pass
 
 def pil_image_to_qpixmap(img):
     app = QCoreApplication.instance()
@@ -32,6 +97,15 @@ def pil_image_to_qpixmap(img):
     qimg = QImage(data, img.width, img.height, QImage.Format_RGB888)
     return QPixmap.fromImage(qimg)
 
+def get_placeholder_image(size=(180, 180)):
+    img = Image.new("RGB", size, (40, 40, 40))
+    draw = ImageDraw.Draw(img)
+    w, h = size
+    center_x, center_y = w // 2, h // 2
+    draw.ellipse((center_x-20, center_y-20, center_x+20, center_y+20), outline=(100, 100, 100), width=2)
+    draw.text((center_x-15, center_y-5), "...", fill=(150, 150, 150))
+    return img
+
 def get_no_thumbnail_image(size=(180, 180)):
     img = Image.new("RGB", size, (60, 60, 60))
     draw = ImageDraw.Draw(img)
@@ -41,83 +115,129 @@ def get_no_thumbnail_image(size=(180, 180)):
     draw.rectangle((0, 0, w - 1, h - 1), outline=(180, 180, 180), width=2)
     return img
 
-def get_image_thumbnail(filepath, size=(180, 180)):
+def get_thumbnail_for_file(filepath, size=(180, 180), cache=None):
+    if cache:
+        cached = cache.get(filepath)
+        if cached:
+            return cached
+    
     try:
-        img = Image.open(filepath)
-        img.thumbnail(size, resample=Resampling.NEAREST)
-        # 背景に合わせてセンタリング
-        bg = Image.new("RGB", size, (60, 60, 60))
-        offset = ((size[0] - img.width) // 2, (size[1] - img.height) // 2)
-        bg.paste(img, offset)
-        return bg
-    except Exception:
-        return get_no_thumbnail_image(size)
-
-def get_video_thumbnail(filepath, size=(180, 180)):
-    try:
-        cap = cv2.VideoCapture(filepath)
-        ret, frame = cap.read()
-        cap.release()
-        if ret:
-            img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(img)
-            pil_img.thumbnail(size, resample=Resampling.NEAREST)
-            # 背景に合わせてセンタリング
-            bg = Image.new("RGB", size, (60, 60, 60))
-            offset = ((size[0] - pil_img.width) // 2, (size[1] - pil_img.height) // 2)
-            bg.paste(pil_img, offset)
-            return bg
-    except Exception:
+        ext = os.path.splitext(filepath)[1].lower()
+        
+        if ext in ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm'):
+            cap = cv2.VideoCapture(filepath)
+            ret, frame = cap.read()
+            cap.release()
+            
+            if ret:
+                img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pil_img = Image.fromarray(img)
+                pil_img.thumbnail(size, Resampling.LANCZOS)
+                result = Image.new("RGB", size, (40, 40, 40))
+                offset = ((size[0] - pil_img.width) // 2, (size[1] - pil_img.height) // 2)
+                result.paste(pil_img, offset)
+                if cache:
+                    cache.set(filepath, result)
+                return result
+        elif ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
+            with Image.open(filepath) as img:
+                img.thumbnail(size, Resampling.LANCZOS)
+                result = Image.new("RGB", size, (40, 40, 40))
+                offset = ((size[0] - img.width) // 2, (size[1] - img.height) // 2)
+                result.paste(img, offset)
+                if cache:
+                    cache.set(filepath, result)
+                return result
+    except:
         pass
+    
     return get_no_thumbnail_image(size)
 
-def get_thumbnail_for_file(filepath, size=(180, 180)):
-    ext = os.path.splitext(filepath)[1].lower()
-    # 画像・動画の拡張子を明確に区別
-    image_exts = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff')
-    video_exts = ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg', '.3gp')
+class BatchThumbnailWorker:
+    def __init__(self, cache=None, max_workers=None):
+        self.cache = cache or FastCache()
+        self.max_workers = max_workers or min(8, multiprocessing.cpu_count())
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
     
-    if ext in video_exts:
-        return get_video_thumbnail(filepath, size)
-    elif ext in image_exts:
-        return get_image_thumbnail(filepath, size)
-    else:
-        return get_no_thumbnail_image(size)
-
-class ThumbnailWorker(threading.Thread):
-    def __init__(self, q, update_cb):
-        super().__init__(daemon=True)
-        self.q = q
-        self.update_cb = update_cb
-
-    def run(self):
-        while True:
-            item = self.q.get()
-            if item is None:
-                break
+    def process_batch(self, paths, size, callback):
+        def process_single(path):
             try:
-                path, size = item
-                result = get_thumbnail_for_file(path, size)
-                self.update_cb(path, result)
-            except Exception as e:
-                print(f"[ThumbnailWorker] Error processing {path}: {e}")
-                self.update_cb(path, get_no_thumbnail_image(size))
-            finally:
-                self.q.task_done()
+                thumb = get_thumbnail_for_file(path, size, self.cache)
+                return path, thumb
+            except:
+                return path, get_no_thumbnail_image(size)
+        
+        futures = [self.executor.submit(process_single, path) for path in paths]
+        
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                path, thumb = future.result()
+                callback(path, thumb)
+            except:
+                pass
+    
+    def shutdown(self):
+        self.executor.shutdown(wait=False)
 
-def start_thumbnail_workers(q, update_cb, num_workers=2):
-    workers = []
-    for _ in range(num_workers):
-        worker = ThumbnailWorker(q, update_cb)
-        worker.start()
-        workers.append(worker)
-    return workers
+def start_thumbnail_workers(q, update_cb, num_workers=None, cache=None):
+    return BatchThumbnailWorker(cache, num_workers)
 
-def load_thumb_cache():
-    return ThumbnailCache()
+class VirtualThumbnailManager:
+    def __init__(self, gui_instance):
+        self.gui = gui_instance
+        self.worker = BatchThumbnailWorker(FastCache())
+        self.pending = set()
+    
+    def load_visible_batch(self, paths):
+        visible_paths = [p for p in paths if p not in self.pending]
+        if not visible_paths:
+            return
+        
+        self.pending.update(visible_paths)
+        
+        # プレースホルダー即座表示
+        placeholder = get_placeholder_image((180, 180))
+        placeholder_pix = pil_image_to_qpixmap(placeholder)
+        
+        for path in visible_paths:
+            norm_path = os.path.abspath(os.path.normpath(path))
+            btn = self.gui.thumb_widget_map.get(norm_path)
+            if btn:
+                btn.setIcon(QIcon(placeholder_pix))
+                btn.setIconSize(QSize(180, 180))
+        
+        # バッチ処理
+        def update_callback(path, thumb):
+            norm_path = os.path.abspath(os.path.normpath(path))
+            btn = self.gui.thumb_widget_map.get(norm_path)
+            if btn and thumb:
+                QTimer.singleShot(0, lambda: self._update_ui(btn, thumb))
+            self.pending.discard(path)
+        
+        self.worker.process_batch(visible_paths, (180, 180), update_callback)
+    
+    def _update_ui(self, btn, thumb):
+        try:
+            pix = pil_image_to_qpixmap(thumb)
+            btn.setIcon(QIcon(pix))
+        except:
+            pass
+
+# 後方互換性
+ThumbnailCache = FastCache
+
+def load_thumb_cache(folder=None):
+    return FastCache()
 
 def save_thumb_cache(cache):
     pass
 
 def clear_thumbnail_cache():
     pass
+
+def clear_queue(q):
+    while not q.empty():
+        try:
+            q.get_nowait()
+        except:
+            break
