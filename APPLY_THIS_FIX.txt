@@ -1,0 +1,12 @@
+gui_main.pyの修正方法
+
+1. 行番号 約290行目の selectFiles メソッドを以下に置き換え:
+
+    def selectFiles(self):
+        folder = QFileDialog.getExistingDirectory(self, "フォルダを選択")
+        if folder:
+            self.folder_label.setText(f"選択フォルダ: {folder}")
+            self.load_thumb_cache(folder)
+            self._show_action_dialog()  # ← この行を追加
+
+これでフォルダ選択後にダイアログが表示されます。

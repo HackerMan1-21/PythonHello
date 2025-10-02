@@ -1,0 +1,38 @@
+# delete_selected and delete_single_file methods patch
+
+def delete_selected(self):
+    if not self.selected_paths or len(self.selected_paths) == 0:
+        return
+    reply = QMessageBox.question(self, "確認", "選択したファイルをゴミ箱に移動しますか？", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+    if reply == QMessageBox.Yes:
+        failed_files = []
+        for path in self.selected_paths:
+            try:
+                move_to_trash(path)
+                for group in self.duplicate_groups:
+                    if path in group:
+                        group.remove(path)
+                        break
+            except Exception as e:
+                logging.warning("Failed to move to trash %s: %s", path, e)
+                failed_files.append(path)
+        self.duplicate_groups = [g for g in self.duplicate_groups if len(g) > 1]
+        self.selected_paths.clear()
+        self.show_current_page()
+        if failed_files:
+            QMessageBox.warning(self, "一部失敗", "以下のファイルの移動に失敗しました:\n" + "\n".join(failed_files))
+        QMessageBox.information(self, "完了", "選択ファイルをゴミ箱に移動しました。")
+
+def delete_single_file(self, file_path):
+    try:
+        move_to_trash(file_path)
+        for group in self.duplicate_groups:
+            if file_path in group:
+                group.remove(file_path)
+                if len(group) <= 1:
+                    self.duplicate_groups.remove(group)
+                break
+        self.show_current_page()
+        QMessageBox.information(self, "完了", f"ファイルをゴミ箱に移動しました:\n{file_path}")
+    except Exception as e:
+        QMessageBox.critical(self, "エラー", f"ファイルの削除中にエラーが発生しました:\n{str(e)}")

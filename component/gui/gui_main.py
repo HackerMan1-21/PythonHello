@@ -305,12 +305,40 @@ class DuplicateFinderGUI(QWidget):
         QTimer.singleShot(0, update_ui)
 
     def selectFiles(self):
-        """フォルダ選択処理"""
         folder = QFileDialog.getExistingDirectory(self, "フォルダを選択")
         if folder:
-            self.folder_label.setText(f"選択フォルダ: {os.path.basename(folder)}")
-            self.status_label.setText("フォルダが選択されました。重複チェックを実行してください。")
+            self.folder_label.setText(f"選択フォルダ: {folder}")
             self.load_thumb_cache(folder)
+            self._show_action_dialog()
+    
+    def _show_action_dialog(self):
+        """重複検査か顔グループ化を選択"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("処理選択")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("実行する処理を選択してください:"))
+        
+        def on_dup():
+            dialog.accept()
+            self.find_duplicates()
+        
+        def on_face():
+            dialog.accept()
+            self.face_grouping_and_move()
+        
+        dup_btn = QPushButton("重複検査")
+        dup_btn.clicked.connect(on_dup)
+        layout.addWidget(dup_btn)
+        
+        face_btn = QPushButton("顔グループ化")
+        face_btn.clicked.connect(on_face)
+        layout.addWidget(face_btn)
+        
+        cancel_btn = QPushButton("キャンセル")
+        cancel_btn.clicked.connect(dialog.reject)
+        layout.addWidget(cancel_btn)
+        
+        dialog.exec_()
     
     def load_thumb_cache(self, folder=None):
         self.thumb_cache = load_thumb_cache(folder)
@@ -428,7 +456,12 @@ class DuplicateFinderGUI(QWidget):
 
     def find_duplicates(self):
         """改善された重複検出処理"""
-        folder = self.folder_label.text()
+        folder_text = self.folder_label.text()
+        if "選択フォルダ: " in folder_text:
+            folder = folder_text.replace("選択フォルダ: ", "")
+        else:
+            folder = folder_text
+        
         if not folder or folder == "フォルダ未選択":
             QMessageBox.warning(self, "警告", "フォルダを選択してください")
             return
@@ -517,12 +550,30 @@ class DuplicateFinderGUI(QWidget):
     
     def _on_duplicates_found(self, groups):
         """重複検出完了時の処理"""
-        self.duplicate_groups = groups
+        video_exts = (".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".mpg", ".mpeg", ".3gp")
+        image_exts = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff")
+        
+        video_groups = []
+        image_groups = []
+        error_groups = []
+        
+        for group in groups:
+            if not group:
+                continue
+            first_ext = os.path.splitext(group[0])[1].lower()
+            if first_ext in video_exts:
+                video_groups.append(group)
+            elif first_ext in image_exts:
+                image_groups.append(group)
+            else:
+                error_groups.append(group)
+        
+        self.duplicate_groups = video_groups + image_groups + error_groups
         self.current_page = 0
         self.show_current_page()
         
-        total_duplicates = sum(len(group) for group in groups)
-        self.status_label.setText(f"重複検出完了: {len(groups)}グループ, {total_duplicates}ファイル")
+        total_duplicates = sum(len(group) for group in self.duplicate_groups)
+        self.status_label.setText(f"重複検出完了: {len(self.duplicate_groups)}グループ, {total_duplicates}ファイル")
 
     def update_ui(self, duplicates, folder, elapsed_time=None, eta_time=None, remain_count=None):
         print("[DEBUG] update_ui: called (first line)")
@@ -696,14 +747,18 @@ class DuplicateFinderGUI(QWidget):
     
     def face_grouping_and_move(self):
         """顔グループ化処理"""
-        folder = self.folder_label.text()
+        folder_text = self.folder_label.text()
+        if "選択フォルダ: " in folder_text:
+            folder = folder_text.replace("選択フォルダ: ", "")
+        else:
+            folder = folder_text
+        
         if not folder or "フォルダ未選択" in folder:
             QMessageBox.warning(self, "警告", "フォルダを選択してください")
             return
         
         try:
             from component.face_grouping import group_by_face_and_move
-            # out_dirパラメータを追加
             out_dir = os.path.join(folder, "face_groups")
             group_by_face_and_move(folder, out_dir)  # type: ignore[call-arg]
             QMessageBox.information(self, "完了", "顔グループ化が完了しました")
@@ -719,29 +774,50 @@ class DuplicateFinderGUI(QWidget):
             QMessageBox.critical(self, "エラー", f"MP4ツールエラー: {e}")
 
     def delete_selected(self):
-        # 選択ファイルをゴミ箱に移動
         if not self.selected_paths or len(self.selected_paths) == 0:
             return
         reply = QMessageBox.question(self, "確認", "選択したファイルをゴミ箱に移動しますか？", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
+            # スクロール位置を保存
+            scroll_pos = self.scroll_area.verticalScrollBar().value()
             failed_files = []
             for path in self.selected_paths:
                 try:
                     move_to_trash(path)
+                    # グループから削除
+                    for group in self.duplicate_groups:
+                        if path in group:
+                            group.remove(path)
                 except Exception as e:
                     logging.warning("Failed to move to trash %s: %s", path, e)
                     failed_files.append(path)
+            # 空になったグループを削除
+            self.duplicate_groups = [g for g in self.duplicate_groups if len(g) > 1]
+            self.selected_paths.clear()
+            # 再描画
+            self.show_current_page()
+            # スクロール位置を復元
+            QTimer.singleShot(0, lambda: self.scroll_area.verticalScrollBar().setValue(scroll_pos))
             if failed_files:
                 QMessageBox.warning(self, "一部失敗", "以下のファイルの移動に失敗しました:\n" + "\n".join(failed_files))
-            self.selected_paths.clear()
-            self.find_duplicates()  # 削除後に重複チェックでUIを再構築
-            QMessageBox.information(self, "完了", "選択ファイルをゴミ箱に移動しました。")
+            else:
+                QMessageBox.information(self, "完了", "選択ファイルをゴミ箱に移動しました。")
 
     def delete_single_file(self, file_path):
-        # 単一ファイルをゴミ箱に移動
         try:
+            # スクロール位置を保存
+            scroll_pos = self.scroll_area.verticalScrollBar().value()
             move_to_trash(file_path)
-            self.find_duplicates()  # 削除後に重複チェックでUIを再構築
+            # グループから削除されたファイルを除外
+            for group in self.duplicate_groups:
+                if file_path in group:
+                    group.remove(file_path)
+            # 空になったグループを削除
+            self.duplicate_groups = [g for g in self.duplicate_groups if len(g) > 1]
+            # 再描画
+            self.show_current_page()
+            # スクロール位置を復元
+            QTimer.singleShot(0, lambda: self.scroll_area.verticalScrollBar().setValue(scroll_pos))
             QMessageBox.information(self, "完了", f"ファイルをゴミ箱に移動しました:\n{file_path}")
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"ファイルの削除中にエラーが発生しました:\n{str(e)}")

@@ -14,19 +14,19 @@ def normalize_path(path):
 def move_to_trash(file_path):
     """ファイルをゴミ箱に移動"""
     try:
-        # Windowsの場合
+        # パスを正規化
+        file_path = normalize_path(file_path)
+        
         if os.name == 'nt':
             import send2trash
             send2trash.send2trash(file_path)
         else:
-            # Unix系の場合
             trash_dir = os.path.expanduser("~/.Trash")
             if not os.path.exists(trash_dir):
                 os.makedirs(trash_dir)
             filename = os.path.basename(file_path)
             shutil.move(file_path, os.path.join(trash_dir, filename))
     except ImportError:
-        # send2trashがない場合は削除
         os.remove(file_path)
     except Exception as e:
         print(f"[FILE] ゴミ箱移動エラー: {e}")

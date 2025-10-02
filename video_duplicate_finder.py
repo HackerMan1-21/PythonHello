@@ -13,7 +13,8 @@ import logging
 from PIL import Image
 import imagehash
 import hashlib
-from component.utils.file_util import normalize_path, collect_files, move_to_trash, shutil_move
+from component.utils.file_util import normalize_path, move_to_trash
+from shutil import move as shutil_move
 from component.utils.cache_util import save_cache, load_cache
 from component.gui.gui_main import DuplicateFinderGUI
 from component.thumbnail.thumbnail_util import load_thumb_cache, save_thumb_cache
@@ -104,8 +105,11 @@ if __name__ == "__main__":
             app.aboutToQuit.connect(_cleanup_workers)
             try:
                 mainWin.show()
-                print("[main] show()呼び出し")
-                logging.info("[main] show()呼び出し")
+                mainWin.raise_()
+                mainWin.activateWindow()
+                print("[main] show()呼び出し - ウィンドウ表示中")
+                logging.info("[main] show()呼び出し - ウィンドウ表示中")
+                print("[main] イベントループ開始 - ウィンドウを閉じるまで待機中...")
                 sys.exit(app.exec_())
             except Exception as e:
                 print("[main] show()またはexec_()で例外:", e)

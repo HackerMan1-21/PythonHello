@@ -68,40 +68,39 @@ def get_video_semantic_hash(filepath, cache=None):
     
     def calc_func(path):
         try:
+            import numpy as np
+            import random
+            
             cap = cv2.VideoCapture(path)
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            duration = total_frames / fps if fps > 0 else 0
             
-            # 複数フレームサンプリング（開始、中間、終了）
-            frame_positions = [0, total_frames//3, total_frames//2, total_frames*2//3, total_frames-1]
+            random.seed(int(os.path.getsize(path)))
             frame_hashes = []
+            attempts = 0
             
-            for pos in frame_positions:
-                if pos >= total_frames: continue
+            while len(frame_hashes) < 5 and attempts < 20:
+                pos = int(total_frames * (0.1 + 0.8 * random.random()))
                 cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
                 ret, frame = cap.read()
+                
                 if ret:
-                    # フレームを小さくリサイズして高速化
-                    frame = cv2.resize(frame, (64, 64))
-                    pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                    frame_hashes.append(imagehash.phash(pil_img, hash_size=8))
+                    mean_val = np.mean(frame)
+                    if 15 < mean_val < 240:
+                        frame = cv2.resize(frame, (64, 64))
+                        pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                        frame_hashes.append(imagehash.phash(pil_img, hash_size=8))
+                
+                attempts += 1
             
             cap.release()
             
             if frame_hashes:
-                # 複数フレームの平均ハッシュを計算
                 combined_hash = frame_hashes[0]
                 for h in frame_hashes[1:]:
-                    # ビット演算で組み合わせ
                     combined_hash = imagehash.ImageHash(combined_hash.hash ^ h.hash)
                 
-                # メタデータを組み込み（ファイルサイズ、推定時長）
-                file_size = os.path.getsize(path)
-                meta_factor = int(duration * 1000 + file_size // 1024) % 256
-                
                 if cache is not None and hasattr(cache, 'set_phash'):
-                    cache.set_phash(path, str(combined_hash))  # type: ignore[union-attr]
+                    cache.set_phash(path, str(combined_hash))
                 return combined_hash
         except Exception as e:
             print(f"[ERROR] 動画ハッシュ計算失敗: {path} - {e}")
