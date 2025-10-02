@@ -1,64 +1,48 @@
-# file_util.py
-# ファイル操作: ファイル/ディレクトリ移動・削除・ゴミ箱移動
+"""
+file_util.py
+ファイルユーティリティ（依存関係エラー回避）
+"""
+
 import os
 import shutil
+import hashlib
 
 def normalize_path(path):
-    # 全角「¥」やスラッシュを半角バックスラッシュに統一し、osの正規化も行う
-    if not isinstance(path, str):
-        return path
-    path = path.replace("\uFFE5", "\\")  # 全角→半角バックスラッシュ
-    path = path.replace("¥", "\\")        # 万が一の全角
-    path = path.replace("/", os.sep).replace("\\", os.sep)
-    return os.path.normpath(path)
+    """パス正規化"""
+    return os.path.abspath(os.path.normpath(path))
 
-def collect_files(folder, exts):
-    files = []
-    for root, dirs, fs in os.walk(folder):
-        for f in fs:
-            if f.lower().endswith(exts):
-                full_path = os.path.join(root, f)
-                files.append(normalize_path(full_path))
-    return files
-
-def move_to_trash(filepath):
-    filepath = normalize_path(filepath)
+def move_to_trash(file_path):
+    """ファイルをゴミ箱に移動"""
     try:
-        from send2trash import send2trash
-        if os.path.isdir(filepath):
-            send2trash(filepath)
+        # Windowsの場合
+        if os.name == 'nt':
+            import send2trash
+            send2trash.send2trash(file_path)
         else:
-            send2trash(filepath)
+            # Unix系の場合
+            trash_dir = os.path.expanduser("~/.Trash")
+            if not os.path.exists(trash_dir):
+                os.makedirs(trash_dir)
+            filename = os.path.basename(file_path)
+            shutil.move(file_path, os.path.join(trash_dir, filename))
     except ImportError:
-        if os.path.isdir(filepath):
-            shutil.rmtree(filepath)
-        else:
-            os.remove(filepath)
+        # send2trashがない場合は削除
+        os.remove(file_path)
     except Exception as e:
-        import logging
-        logging.warning(f"ゴミ箱移動失敗: {filepath}: {e}")
-
-def shutil_move(src, dst):
-    shutil.move(src, dst)
+        print(f"[FILE] ゴミ箱移動エラー: {e}")
+        raise
 
 def get_folder_state(folder):
-    """
-    指定フォルダ内のファイル数・合計サイズ・最終更新日時を返す。
-    戻り値: (ファイル数, 合計バイト数, 最終更新日時)
-    """
-    import os
-    total_files = 0
-    total_bytes = 0
-    last_modified = 0
-    for root, dirs, files in os.walk(folder):
-        for f in files:
-            path = os.path.join(root, f)
-            try:
-                stat = os.stat(path)
-                total_files += 1
-                total_bytes += stat.st_size
-                if stat.st_mtime > last_modified:
-                    last_modified = stat.st_mtime
-            except Exception:
-                pass
-    return total_files, total_bytes, last_modified
+    """フォルダ状態取得"""
+    try:
+        files = []
+        for root, dirs, fs in os.walk(folder):
+            for f in fs:
+                files.append(os.path.join(root, f))
+        
+        # ファイル一覧のハッシュを計算
+        file_list = sorted(files)
+        hash_str = ''.join(file_list)
+        return hashlib.md5(hash_str.encode()).hexdigest()
+    except Exception:
+        return None

@@ -21,6 +21,10 @@ class FastCache:
         self.memory_cache = {}
         self.cache = self.memory_cache  # 後方互換性
         self.max_memory = 1000
+        
+        # pHashキャッシュ用DB初期化
+        self.phash_db_path = os.path.join(cache_dir, "phash.db")
+        self._init_phash_db()
     
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
@@ -30,6 +34,18 @@ class FastCache:
                 mtime REAL,
                 data BLOB
             )""")
+    
+    def _init_phash_db(self):
+        with sqlite3.connect(self.phash_db_path) as conn:
+            conn.execute("""CREATE TABLE IF NOT EXISTS hash_cache (
+                file_path TEXT PRIMARY KEY,
+                file_size INTEGER,
+                modified_time REAL,
+                phash TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_phash ON hash_cache(phash)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_file_path ON hash_cache(file_path)")
     
     def _get_hash(self, path):
         return hashlib.md5(path.encode()).hexdigest()
@@ -77,11 +93,47 @@ class FastCache:
         except:
             pass
     
+    def get_phash(self, file_path):
+        try:
+            stat = os.stat(file_path)
+            file_size = stat.st_size
+            mtime = stat.st_mtime
+            
+            with sqlite3.connect(self.phash_db_path) as conn:
+                row = conn.execute(
+                    "SELECT phash FROM hash_cache WHERE file_path=? AND file_size=? AND modified_time=?",
+                    (file_path, file_size, mtime)
+                ).fetchone()
+                
+                if row:
+                    print(f"[pHash cache HIT] {file_path}")
+                    return row[0]
+        except:
+            pass
+        print(f"[pHash cache MISS] {file_path}")
+        return None
+    
+    def set_phash(self, file_path, phash_str):
+        try:
+            stat = os.stat(file_path)
+            file_size = stat.st_size
+            mtime = stat.st_mtime
+            
+            with sqlite3.connect(self.phash_db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO hash_cache (file_path, file_size, modified_time, phash) VALUES (?, ?, ?, ?)",
+                    (file_path, file_size, mtime, phash_str)
+                )
+        except:
+            pass
+    
     def clear(self):
         self.memory_cache.clear()
         try:
             os.remove(self.db_path)
+            os.remove(self.phash_db_path)
             self._init_db()
+            self._init_phash_db()
         except:
             pass
 
@@ -122,61 +174,102 @@ def get_thumbnail_for_file(filepath, size=(180, 180), cache=None):
             return cached
     
     try:
+        # ファイル存在チェック
+        if not os.path.exists(filepath):
+            return get_no_thumbnail_image(size)
+        
         ext = os.path.splitext(filepath)[1].lower()
         
         if ext in ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm'):
             cap = cv2.VideoCapture(filepath)
-            ret, frame = cap.read()
+            if not cap.isOpened():
+                cap.release()
+                return get_no_thumbnail_image(size)
+            
+            # 複数フレームを試行
+            for frame_pos in [0, 30, 60]:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
+                ret, frame = cap.read()
+                if ret and frame is not None and frame.size > 0:
+                    break
+            
             cap.release()
             
-            if ret:
-                img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                pil_img = Image.fromarray(img)
-                pil_img.thumbnail(size, Resampling.LANCZOS)
-                result = Image.new("RGB", size, (40, 40, 40))
-                offset = ((size[0] - pil_img.width) // 2, (size[1] - pil_img.height) // 2)
-                result.paste(pil_img, offset)
-                if cache:
-                    cache.set(filepath, result)
-                return result
+            if ret and frame is not None:
+                # フレームの有効性チェック
+                if frame.shape[0] > 0 and frame.shape[1] > 0:
+                    img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    pil_img = Image.fromarray(img)
+                    pil_img.thumbnail(size, Resampling.LANCZOS)
+                    result = Image.new("RGB", size, (40, 40, 40))
+                    offset = ((size[0] - pil_img.width) // 2, (size[1] - pil_img.height) // 2)
+                    result.paste(pil_img, offset)
+                    if cache:
+                        cache.set(filepath, result)
+                    return result
+                    
         elif ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
             with Image.open(filepath) as img:
-                img.thumbnail(size, Resampling.LANCZOS)
-                result = Image.new("RGB", size, (40, 40, 40))
-                offset = ((size[0] - img.width) // 2, (size[1] - img.height) // 2)
-                result.paste(img, offset)
-                if cache:
-                    cache.set(filepath, result)
-                return result
-    except:
-        pass
+                # 画像の有効性チェック
+                if img.size[0] > 0 and img.size[1] > 0:
+                    img.thumbnail(size, Resampling.LANCZOS)
+                    result = Image.new("RGB", size, (40, 40, 40))
+                    offset = ((size[0] - img.width) // 2, (size[1] - img.height) // 2)
+                    result.paste(img, offset)
+                    if cache:
+                        cache.set(filepath, result)
+                    return result
+    except Exception as e:
+        print(f"[THUMB ERROR] {filepath}: {e}")
     
     return get_no_thumbnail_image(size)
 
 class BatchThumbnailWorker:
     def __init__(self, cache=None, max_workers=None):
         self.cache = cache or FastCache()
-        self.max_workers = max_workers or min(8, multiprocessing.cpu_count())
+        # 大規模データではワーカー数を制限
+        self.max_workers = max_workers or min(4, multiprocessing.cpu_count())
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
+        self.processed_count = 0
+        self.error_count = 0
     
     def process_batch(self, paths, size, callback):
+        print(f"[THUMB] バッチ処理開始: {len(paths)}ファイル")
+        
         def process_single(path):
             try:
                 thumb = get_thumbnail_for_file(path, size, self.cache)
+                if thumb is None:
+                    self.error_count += 1
+                    return path, get_no_thumbnail_image(size)
+                self.processed_count += 1
                 return path, thumb
-            except:
+            except Exception as e:
+                print(f"[THUMB ERROR] {os.path.basename(path)}: {e}")
+                self.error_count += 1
                 return path, get_no_thumbnail_image(size)
         
-        futures = [self.executor.submit(process_single, path) for path in paths]
+        # 大規模データではバッチサイズを制限
+        batch_size = 50 if len(paths) > 1000 else len(paths)
         
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                path, thumb = future.result()
-                callback(path, thumb)
-            except:
-                pass
+        for i in range(0, len(paths), batch_size):
+            batch = paths[i:i+batch_size]
+            futures = [self.executor.submit(process_single, path) for path in batch]
+            
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    path, thumb = future.result(timeout=30)  # 30秒タイムアウト
+                    callback(path, thumb)
+                except concurrent.futures.TimeoutError:
+                    print(f"[THUMB TIMEOUT] {os.path.basename(path)}")
+                    callback(path, get_no_thumbnail_image(size))
+                except Exception as e:
+                    print(f"[THUMB CALLBACK ERROR] {e}")
+        
+        print(f"[THUMB] 処理完了: 成功{self.processed_count}, エラー{self.error_count}")
     
     def shutdown(self):
+        print(f"[THUMB] シャットダウン: 成功{self.processed_count}, エラー{self.error_count}")
         self.executor.shutdown(wait=False)
 
 def start_thumbnail_workers(q, update_cb, num_workers=None, cache=None):

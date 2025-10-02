@@ -19,21 +19,9 @@ PyQt5ベースの重複動画・画像検出/管理アプリのメインGUIク�
 UI・イベント・ユーザー操作・各種機能呼び出しを担当。
 """
 import os
-import sys
-import cv2
-import numpy as np
 import queue
 import threading
-import time
-import subprocess
-import shutil
-import tempfile
-import pickle
 import logging
-from PIL import Image
-import imagehash
-import hashlib
-from shutil import move as shutil_move
 from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QScrollArea, QProgressBar, QDialog, QGridLayout, QDialogButtonBox, QCheckBox, QProgressDialog, QGroupBox, QListView, QAbstractItemView, QStyledItemDelegate, QApplication, QStackedWidget, QSizePolicy, QComboBox)
 from PyQt5.QtGui import QPixmap, QImage, QIcon
 from PyQt5.QtCore import Qt, QSize, QTimer, QAbstractListModel, QModelIndex, QVariant, pyqtSignal
@@ -52,10 +40,17 @@ from component.ui_util import show_detail_dialog, show_compare_dialog, add_thumb
 from component.group_ui import create_duplicate_group_ui, show_face_grouping_dialog, move_selected_files_to_folder, show_broken_video_dialog
 from component.thumbnail.thumbnail_util import ThumbnailCache, get_thumbnail_for_file
 
-from .gui_thumbnail import ThumbnailListModel
-from .gui_dialogs import show_progress_dialog
-from .gui_utils import ThumbnailDelegate
-from .mode_selection_dialog import ModeSelectionDialog
+# オプションインポート（エラー回避）
+try:
+    from .gui_thumbnail import ThumbnailListModel
+    from .gui_dialogs import show_progress_dialog
+    from .gui_utils import ThumbnailDelegate
+    from .mode_selection_dialog import ModeSelectionDialog
+except ImportError:
+    ThumbnailListModel = None  # type: ignore
+    show_progress_dialog = None  # type: ignore
+    ThumbnailDelegate = None  # type: ignore
+    ModeSelectionDialog = None  # type: ignore
 
 print("DEBUG: gui_main.py loaded from", __file__)
 
@@ -101,9 +96,8 @@ class DuplicateFinderGUI(QWidget):
         self.thumb_cache = None
         self.thumb_widget_map = {}
         self.thumb_cache = load_thumb_cache()
-        # 高速サムネイルシステム
-        from component.thumbnail.thumbnail_util import VirtualThumbnailManager
-        self.thumb_manager = VirtualThumbnailManager(self)
+        # 高速サムネイルシステム（遅延初期化）
+        self.thumb_manager = None
         self.init_ui()
         self.worker = None  # スレッド初期化
         self.cancel_requested = False
@@ -183,16 +177,16 @@ class DuplicateFinderGUI(QWidget):
         btn_hbox.addWidget(self.dup_check_btn)
         self.face_group_btn = QPushButton("顔でグループ化して振り分け")
         self.face_group_btn.setStyleSheet("font-size:16px;color:#00ff99;border:2px solid #00ff99;border-radius:8px;padding:8px;")
-        self.face_group_btn.clicked.connect(lambda: self.face_grouping_and_move())
+        self.face_group_btn.clicked.connect(self.face_grouping_and_move)
         btn_hbox.addWidget(self.face_group_btn)
         self.mp4_tool_btn = QPushButton("MP4修復/変換")
         self.mp4_tool_btn.setStyleSheet("font-size:16px;color:#ffb300;border:2px solid #ffb300;border-radius:8px;padding:8px;")
-        self.mp4_tool_btn.clicked.connect(lambda: self.show_mp4_tool_dialog())
+        self.mp4_tool_btn.clicked.connect(self.show_mp4_tool_dialog)
         btn_hbox.addWidget(self.mp4_tool_btn)
         # --- サムネイルキャッシュ削除ボタン ---
         self.clear_thumb_cache_btn = QPushButton("サムネイルキャッシュ削除")
         self.clear_thumb_cache_btn.setStyleSheet("font-size:14px;color:#fff;background:#444;border:1px solid #00ffe7;border-radius:6px;padding:4px 8px;")
-        self.clear_thumb_cache_btn.clicked.connect(lambda: self.clear_thumb_cache())
+        self.clear_thumb_cache_btn.clicked.connect(self.clear_thumb_cache)
         btn_hbox.addWidget(self.clear_thumb_cache_btn)
         layout.addLayout(btn_hbox)
         # --- フォルダラベル・選択ボタン ---
@@ -212,7 +206,7 @@ class DuplicateFinderGUI(QWidget):
         self.progress_detail_label = QLabel("")
         self.progress_detail_label.setStyleSheet("font-size:13px;color:#00ff99;margin-bottom:4px;")
         layout.addWidget(self.progress_detail_label)
-        # --- 進捗バー ---
+        # --- プログレスバー ---
         self.progress = QProgressBar()
         self.progress.setValue(0)
         layout.addWidget(self.progress)
@@ -310,27 +304,13 @@ class DuplicateFinderGUI(QWidget):
         QTimer.singleShot(0, update_ui)
 
     def selectFiles(self):
-        # フォルダ選択ダイアログ
-        options = QFileDialog.Options()
-        folder = QFileDialog.getExistingDirectory(self, "フォルダを選択", "", options=options)
+        """フォルダ選択処理"""
+        folder = QFileDialog.getExistingDirectory(self, "フォルダを選択")
         if folder:
-            self.folder_label.setText(folder)
+            self.folder_label.setText(f"選択フォルダ: {os.path.basename(folder)}")
+            self.status_label.setText("フォルダが選択されました。重複チェックを実行してください。")
             self.load_thumb_cache(folder)
-
-            # 処理モード選択ダイアログ
-            mode_dialog = ModeSelectionDialog(self)
-            if mode_dialog.exec_() == QDialog.Accepted:
-                if mode_dialog.selected_mode == "duplicate":
-                    files = get_image_and_video_files(folder)
-                    self.clear_content()
-                    self.processFiles(files)
-                    self.find_duplicates()
-                elif mode_dialog.selected_mode == "face":
-                    self.face_grouping_and_move()
-            else:
-                # キャンセルされた場合はフォルダラベルをリセット
-                self.folder_label.setText("フォルダ未選択")
-
+    
     def load_thumb_cache(self, folder=None):
         self.thumb_cache = load_thumb_cache(folder)
 
@@ -443,44 +423,102 @@ class DuplicateFinderGUI(QWidget):
         self.cancel_btn.setEnabled(False)
 
     def find_duplicates(self):
-        print("[DEBUG] find_duplicates: start")
-        self.progress.setValue(0)
-        self.cancel_btn.setEnabled(True)
-        self.cancel_requested = False
-        start_time = time.time()
+        """改善された重複検出処理"""
         folder = self.folder_label.text()
-
-        def progress_callback(current, total):
-            if self.cancel_requested:
-                return
-            elapsed = time.time() - start_time
-            if current > 0:
-                eta = (elapsed / current) * (total - current)
-                remain = total - current
-            else:
-                eta = 0
-                remain = total
-
-            # 進捗詳細情報を更新
-            progress_text = f"処理中: {current}/{total} ファイル"
-            if eta > 0:
-                eta_min = int(eta // 60)
-                eta_sec = int(eta % 60)
-                progress_text += f" | 残り時間: {eta_min}:{eta_sec:02d}"
-
-            def update_progress():
-                self.progress.setValue(int(current/total*100))
-                self.progress_detail_label.setText(progress_text)
-            QTimer.singleShot(0, update_progress)
-
-        def worker():
-            print(f"[DEBUG] find_duplicates.worker: folder={folder}")
-            duplicates, _ = find_duplicates_in_folder(folder, progress_callback=progress_callback, parallel=True)
-            print(f"[DEBUG] find_duplicates.worker: duplicates found={len(duplicates)}")
-            elapsed = time.time() - start_time
-            self.update_ui_signal.emit(duplicates, folder, elapsed, 0, 0)
-            print("[DEBUG] find_duplicates.worker: signal emitted after update_ui")
-        threading.Thread(target=worker).start()
+        if not folder or folder == "フォルダ未選択":
+            QMessageBox.warning(self, "警告", "フォルダを選択してください")
+            return
+        
+        # モード選択ダイアログ
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QRadioButton, QDialogButtonBox, QLabel
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("重複検出モード選択")
+        layout = QVBoxLayout(dialog)
+        
+        layout.addWidget(QLabel("検出精度を選択してください:"))
+        
+        fast_mode = QRadioButton("高速モード (従来方式)")
+        fast_mode.setChecked(True)
+        layout.addWidget(fast_mode)
+        
+        advanced_mode = QRadioButton("高精度モード (動画内容解析)")
+        layout.addWidget(advanced_mode)
+        
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        
+        use_advanced = advanced_mode.isChecked()
+        self._execute_duplicate_finding(folder, use_advanced)
+        
+    def _execute_duplicate_finding(self, folder, use_advanced=False):
+        """重複検出の実際の実行処理"""
+        from PyQt5.QtCore import QThread, pyqtSignal
+        
+        class DuplicateWorker(QThread):
+            progress = pyqtSignal(int, int)
+            finished = pyqtSignal(list)
+            error = pyqtSignal(str)
+            
+            def __init__(self, folder_path, use_advanced):
+                super().__init__()
+                self.folder_path = folder_path
+                self.use_advanced = use_advanced
+            
+            def run(self):
+                try:
+                    if self.use_advanced:
+                        from component.video_analyzer import find_video_duplicates_advanced
+                        from component.duplicate_finder import get_image_and_video_files
+                        
+                        video_exts = (".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm")
+                        all_files = get_image_and_video_files(self.folder_path)
+                        video_files = [f for f in all_files if os.path.splitext(f)[1].lower() in video_exts]
+                        
+                        if video_files:
+                            from component.advanced_video_detector import find_ultra_duplicates
+                            groups = find_ultra_duplicates(video_files, self.progress.emit)
+                        else:
+                            groups = []
+                        
+                        image_files = [f for f in all_files if f not in video_files]
+                        if image_files:
+                            from component.duplicate_finder import find_duplicates_in_folder
+                            img_groups, _ = find_duplicates_in_folder(self.folder_path, progress_callback=self.progress.emit)
+                            groups.extend(img_groups)
+                    else:
+                        from component.duplicate_finder import find_duplicates_in_folder
+                        groups, _ = find_duplicates_in_folder(self.folder_path, progress_callback=self.progress.emit)
+                    
+                    self.finished.emit(groups)
+                except Exception as e:
+                    self.error.emit(str(e))
+        
+        progress_dialog = QProgressDialog("重複検出中...", "キャンセル", 0, 100, self)
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.show()
+        
+        self.worker = DuplicateWorker(folder, use_advanced)
+        self.worker.progress.connect(lambda current, total: progress_dialog.setValue(int(current/total*100)))
+        self.worker.finished.connect(self._on_duplicates_found)
+        self.worker.error.connect(lambda err: QMessageBox.critical(self, "エラー", f"重複検出エラー: {err}"))
+        self.worker.finished.connect(progress_dialog.close)
+        self.worker.error.connect(progress_dialog.close)
+        self.worker.start()
+    
+    def _on_duplicates_found(self, groups):
+        """重複検出完了時の処理"""
+        self.duplicate_groups = groups
+        self.current_page = 0
+        self.show_current_page()
+        
+        total_duplicates = sum(len(group) for group in groups)
+        self.status_label.setText(f"重複検出完了: {len(groups)}グループ, {total_duplicates}ファイル")
 
     def update_ui(self, duplicates, folder, elapsed_time=None, eta_time=None, remain_count=None):
         print("[DEBUG] update_ui: called (first line)")
@@ -510,13 +548,20 @@ class DuplicateFinderGUI(QWidget):
             print(f"[DEBUG] update_ui: outer exception: {e}")
 
     def show_current_page(self, elapsed_time=None, eta_time=None, remain_count=None):
+        # デバッグ情報
+        print(f"[DEBUG] 総グループ数: {len(self.duplicate_groups)}")
+        print(f"[DEBUG] 現在ページ: {self.current_page}, 1ページあたり: {self.groups_per_page}")
+        
         # ページ切り替え時にキューをクリア
         from component.thumbnail.thumbnail_util import clear_queue
         clear_queue(self.thumb_queue)
         self.clear_content()
+        
         start = self.current_page * self.groups_per_page
         end = start + self.groups_per_page
         page_groups = self.duplicate_groups[start:end]
+        
+        print(f"[DEBUG] 表示範囲: {start}-{end}, 実際のグループ数: {len(page_groups)}")
         if not page_groups:
             self.content_layout.addWidget(QLabel("重複ファイルは見つかりませんでした"))
             return
@@ -578,10 +623,13 @@ class DuplicateFinderGUI(QWidget):
             except Exception as e:
                 print(f"[DEBUG] show_current_page: group UI exception: {e}")
 
-        # バッチでサムネイル要求
+        # バッチでサムネイル要求（現在ページのみ）
         all_paths = [f for group in page_groups for f in group]
-        if hasattr(self, 'thumb_manager'):
-            self.thumb_manager.load_visible_batch(all_paths)
+        print(f"[DEBUG] サムネイル生成対象: {len(all_paths)}ファイル")
+        if self.thumb_manager is None:
+            from component.thumbnail.thumbnail_util import VirtualThumbnailManager
+            self.thumb_manager = VirtualThumbnailManager(self)
+        self.thumb_manager.load_visible_batch(all_paths)
         # ページラベル・ボタン状態
         total_pages = max(1, (len(self.duplicate_groups) + self.groups_per_page - 1) // self.groups_per_page)
         self.page_label.setText(f"{self.current_page + 1} / {total_pages}")
@@ -641,6 +689,28 @@ class DuplicateFinderGUI(QWidget):
                 QMessageBox.information(self, "完了", "サムネイルキャッシュを削除しました。")
             except Exception as e:
                 QMessageBox.critical(self, "エラー", f"キャッシュ削除エラー: {e}")
+    
+    def face_grouping_and_move(self):
+        """顔グループ化処理"""
+        folder = self.folder_label.text()
+        if not folder or "フォルダ未選択" in folder:
+            QMessageBox.warning(self, "警告", "フォルダを選択してください")
+            return
+        
+        try:
+            from component.face_grouping import group_by_face_and_move
+            group_by_face_and_move(folder)
+            QMessageBox.information(self, "完了", "顔グループ化が完了しました")
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"顔グループ化エラー: {e}")
+    
+    def show_mp4_tool_dialog(self):
+        """MP4修復ツール表示"""
+        try:
+            from component.ffmpeg_util import show_mp4_tool_dialog
+            show_mp4_tool_dialog(self)
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"MP4ツールエラー: {e}")
 
     def delete_selected(self):
         # 選択ファイルをゴミ箱に移動
@@ -656,7 +726,7 @@ class DuplicateFinderGUI(QWidget):
                     logging.warning("Failed to move to trash %s: %s", path, e)
                     failed_files.append(path)
             if failed_files:
-                QMessageBox.warning(self, "一部失敗", f"以下のファイルの移動に失敗しました:\n" + "\n".join(failed_files))
+                QMessageBox.warning(self, "一部失敗", "以下のファイルの移動に失敗しました:\n" + "\n".join(failed_files))
             self.selected_paths.clear()
             self.find_duplicates()  # 削除後に重複チェックでUIを再構築
             QMessageBox.information(self, "完了", "選択ファイルをゴミ箱に移動しました。")
