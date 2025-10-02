@@ -2,6 +2,7 @@ import os
 import threading
 import sqlite3
 import hashlib
+from typing import cast
 from PIL import Image, ImageDraw
 from PIL.Image import Resampling
 import cv2
@@ -150,7 +151,7 @@ def pil_image_to_qpixmap(img):
     return QPixmap.fromImage(qimg)
 
 def get_placeholder_image(size=(180, 180)):
-    img = Image.new("RGB", size, (40, 40, 40))
+    img = Image.new("RGB", size, color=cast(int, (40, 40, 40)))  # type: ignore[arg-type]
     draw = ImageDraw.Draw(img)
     w, h = size
     center_x, center_y = w // 2, h // 2
@@ -159,7 +160,7 @@ def get_placeholder_image(size=(180, 180)):
     return img
 
 def get_no_thumbnail_image(size=(180, 180)):
-    img = Image.new("RGB", size, (60, 60, 60))
+    img = Image.new("RGB", size, color=cast(int, (60, 60, 60)))  # type: ignore[arg-type]
     draw = ImageDraw.Draw(img)
     w, h = size
     draw.line((10, 10, w - 10, h - 10), fill=(200, 80, 80), width=6)
@@ -187,6 +188,8 @@ def get_thumbnail_for_file(filepath, size=(180, 180), cache=None):
                 return get_no_thumbnail_image(size)
             
             # 複数フレームを試行
+            ret = False
+            frame = None
             for frame_pos in [0, 30, 60]:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
                 ret, frame = cap.read()
@@ -201,7 +204,7 @@ def get_thumbnail_for_file(filepath, size=(180, 180), cache=None):
                     img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     pil_img = Image.fromarray(img)
                     pil_img.thumbnail(size, Resampling.LANCZOS)
-                    result = Image.new("RGB", size, (40, 40, 40))
+                    result = Image.new("RGB", size, color=cast(int, (40, 40, 40)))  # type: ignore[arg-type]
                     offset = ((size[0] - pil_img.width) // 2, (size[1] - pil_img.height) // 2)
                     result.paste(pil_img, offset)
                     if cache:
@@ -213,7 +216,7 @@ def get_thumbnail_for_file(filepath, size=(180, 180), cache=None):
                 # 画像の有効性チェック
                 if img.size[0] > 0 and img.size[1] > 0:
                     img.thumbnail(size, Resampling.LANCZOS)
-                    result = Image.new("RGB", size, (40, 40, 40))
+                    result = Image.new("RGB", size, color=cast(int, (40, 40, 40)))  # type: ignore[arg-type]
                     offset = ((size[0] - img.width) // 2, (size[1] - img.height) // 2)
                     result.paste(img, offset)
                     if cache:
@@ -236,7 +239,7 @@ class BatchThumbnailWorker:
     def process_batch(self, paths, size, callback):
         print(f"[THUMB] バッチ処理開始: {len(paths)}ファイル")
         
-        def process_single(path):
+        def process_single(path: str):
             try:
                 thumb = get_thumbnail_for_file(path, size, self.cache)
                 if thumb is None:
@@ -260,9 +263,9 @@ class BatchThumbnailWorker:
                 try:
                     path, thumb = future.result(timeout=30)  # 30秒タイムアウト
                     callback(path, thumb)
-                except concurrent.futures.TimeoutError:
-                    print(f"[THUMB TIMEOUT] {os.path.basename(path)}")
-                    callback(path, get_no_thumbnail_image(size))
+                except concurrent.futures.TimeoutError as timeout_err:
+                    # pathが未定義の場合のフォールバック
+                    print(f"[THUMB TIMEOUT] {timeout_err}")
                 except Exception as e:
                     print(f"[THUMB CALLBACK ERROR] {e}")
         

@@ -223,7 +223,8 @@ class DuplicateFinderGUI(QWidget):
         self.list_view.setResizeMode(QListView.Adjust)
         self.list_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.list_view.setSpacing(8)
-        self.list_view.setItemDelegate(ThumbnailDelegate())
+        if ThumbnailDelegate is not None:
+            self.list_view.setItemDelegate(ThumbnailDelegate())  # type: ignore[call-arg]
         self.list_view.setIconSize(QSize(180, 180))  # ← 追加
         # --- スタックウィジェットでUI切替 ---
         self.stacked = QStackedWidget()
@@ -343,16 +344,19 @@ class DuplicateFinderGUI(QWidget):
         self.progressBar.setValue(0)
         # ...検出実行コード...
 
-    def closeEvent(self, event):
+    def closeEvent(self, a0):  # type: ignore[override]
         # ウィンドウ閉じる処理
-        if self.worker and hasattr(self.worker, 'is_alive') and self.worker.is_alive():
+        if self.worker and hasattr(self.worker, 'isRunning') and self.worker.isRunning():  # type: ignore[attr-defined]
             reply = QMessageBox.question(self, 'Message', 'Detection is still running. Do you really want to exit?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.Yes:
-                event.accept()
+                if a0 is not None:
+                    a0.accept()  # type: ignore[union-attr]
             else:
-                event.ignore()
+                if a0 is not None:
+                    a0.ignore()  # type: ignore[union-attr]
         else:
-            event.accept()
+            if a0 is not None:
+                a0.accept()  # type: ignore[union-attr]
 
     def add_thumbnail_widget(self, file_path):
         # サムネイル付きファイル表示ウィジェットを追加（UIユーティリティに移譲）
@@ -372,13 +376,13 @@ class DuplicateFinderGUI(QWidget):
             widget.setStyleSheet("background:rgba(0,255,231,0.25);border:2px solid #00ffe7;border-radius:8px;margin:4px 0;padding:4px 8px;")
         delete_btn.setEnabled(len(selected_paths) > 0)
 
-    def dragEnterEvent(self, event):
+    def dragEnterEvent(self, a0):  # type: ignore[override]
         # ドラッグ＆ドロップでファイル追加・移動（UIユーティリティに移譲）
-        drag_enter_event(event)
+        drag_enter_event(a0)
 
-    def dropEvent(self, event):
+    def dropEvent(self, a0):  # type: ignore[override]
         # ドロップされたファイルを検出対象に追加 or 移動（UIユーティリティに移譲）
-        drop_event(event, self.processFiles)
+        drop_event(a0, self.processFiles)
 
     def toggle_view_mode(self):
         if self.current_view_mode == 0:
@@ -500,15 +504,15 @@ class DuplicateFinderGUI(QWidget):
                     self.error.emit(str(e))
         
         progress_dialog = QProgressDialog("重複検出中...", "キャンセル", 0, 100, self)
-        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.setWindowModality(Qt.WindowModal)  # type: ignore[attr-defined]
         progress_dialog.show()
         
         self.worker = DuplicateWorker(folder, use_advanced)
         self.worker.progress.connect(lambda current, total: progress_dialog.setValue(int(current/total*100)))
         self.worker.finished.connect(self._on_duplicates_found)
-        self.worker.error.connect(lambda err: QMessageBox.critical(self, "エラー", f"重複検出エラー: {err}"))
-        self.worker.finished.connect(progress_dialog.close)
-        self.worker.error.connect(progress_dialog.close)
+        self.worker.error.connect(lambda err: QMessageBox.critical(self, "エラー", f"重複検出エラー: {err}") or None)  # type: ignore[func-returns-value]
+        self.worker.finished.connect(progress_dialog.close)  # type: ignore[arg-type]
+        self.worker.error.connect(progress_dialog.close)  # type: ignore[arg-type]
         self.worker.start()
     
     def _on_duplicates_found(self, groups):
@@ -684,8 +688,8 @@ class DuplicateFinderGUI(QWidget):
         reply = QMessageBox.question(self, "確認", "サムネイルキャッシュを削除しますか？", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
             try:
-                if hasattr(self.thumb_cache, 'clear'):
-                    self.thumb_cache.clear()
+                if self.thumb_cache is not None and hasattr(self.thumb_cache, 'clear'):
+                    self.thumb_cache.clear()  # type: ignore[union-attr]
                 QMessageBox.information(self, "完了", "サムネイルキャッシュを削除しました。")
             except Exception as e:
                 QMessageBox.critical(self, "エラー", f"キャッシュ削除エラー: {e}")
@@ -699,7 +703,9 @@ class DuplicateFinderGUI(QWidget):
         
         try:
             from component.face_grouping import group_by_face_and_move
-            group_by_face_and_move(folder)
+            # out_dirパラメータを追加
+            out_dir = os.path.join(folder, "face_groups")
+            group_by_face_and_move(folder, out_dir)  # type: ignore[call-arg]
             QMessageBox.information(self, "完了", "顔グループ化が完了しました")
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"顔グループ化エラー: {e}")

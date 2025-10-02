@@ -26,8 +26,8 @@ def get_image_phash(filepath, folder=None, cache=None):
     filepath = normalize_path(filepath)
     
     # FastCacheのpHashキャッシュを優先使用
-    if hasattr(cache, 'get_phash'):
-        cached_hash = cache.get_phash(filepath)
+    if cache is not None and hasattr(cache, 'get_phash'):
+        cached_hash = cache.get_phash(filepath)  # type: ignore[union-attr]
         if cached_hash:
             try:
                 return imagehash.hex_to_hash(cached_hash)
@@ -39,8 +39,8 @@ def get_image_phash(filepath, folder=None, cache=None):
             img = Image.open(path).convert("RGB")
             phash = imagehash.phash(img)
             # FastCacheに保存
-            if hasattr(cache, 'set_phash'):
-                cache.set_phash(path, str(phash))
+            if cache is not None and hasattr(cache, 'set_phash'):
+                cache.set_phash(path, str(phash))  # type: ignore[union-attr]
             return phash
         except Exception:
             return None
@@ -58,8 +58,8 @@ def get_video_semantic_hash(filepath, cache=None):
     """動画の意味的ハッシュを計算（複数フレーム+メタデータ）"""
     filepath = normalize_path(filepath)
     
-    if hasattr(cache, 'get_phash'):
-        cached_hash = cache.get_phash(filepath)
+    if cache is not None and hasattr(cache, 'get_phash'):
+        cached_hash = cache.get_phash(filepath)  # type: ignore[union-attr]
         if cached_hash:
             try:
                 return imagehash.hex_to_hash(cached_hash)
@@ -100,8 +100,8 @@ def get_video_semantic_hash(filepath, cache=None):
                 file_size = os.path.getsize(path)
                 meta_factor = int(duration * 1000 + file_size // 1024) % 256
                 
-                if hasattr(cache, 'set_phash'):
-                    cache.set_phash(path, str(combined_hash))
+                if cache is not None and hasattr(cache, 'set_phash'):
+                    cache.set_phash(path, str(combined_hash))  # type: ignore[union-attr]
                 return combined_hash
         except Exception as e:
             print(f"[ERROR] 動画ハッシュ計算失敗: {path} - {e}")
