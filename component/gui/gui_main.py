@@ -886,6 +886,22 @@ class DuplicateFinderGUI(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"MP4ツールエラー: {e}")
 
+    def dismiss_group(self, group):
+        scroll_bar = self.scroll_area.verticalScrollBar()
+        scroll_pos = scroll_bar.value() if scroll_bar else 0
+        
+        if group in self.duplicate_groups:
+            self.duplicate_groups.remove(group)
+        
+        total_pages = max(1, (len(self.duplicate_groups) + self.groups_per_page - 1) // self.groups_per_page)
+        if self.current_page >= total_pages:
+            self.current_page = max(0, total_pages - 1)
+        
+        self.show_current_page()
+        
+        if scroll_bar:
+            QTimer.singleShot(0, lambda: scroll_bar.setValue(scroll_pos))
+    
     def delete_single_file(self, file_path):
         try:
             # スクロール位置を保存
@@ -898,6 +914,12 @@ class DuplicateFinderGUI(QWidget):
                     group.remove(file_path)
             # 空になったグループを削除
             self.duplicate_groups = [g for g in self.duplicate_groups if len(g) > 1]
+            
+            # ページ番号を調整
+            total_pages = max(1, (len(self.duplicate_groups) + self.groups_per_page - 1) // self.groups_per_page)
+            if self.current_page >= total_pages:
+                self.current_page = max(0, total_pages - 1)
+            
             # 再描画
             self.show_current_page()
             # スクロール位置を復元

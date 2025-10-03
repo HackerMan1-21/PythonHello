@@ -281,9 +281,10 @@ def get_features_with_cache(filepath, calc_func, folder=None):
                 time.sleep(0.2)
     return result
 
-def group_by_phash(file_hashes, threshold=5):
+def group_by_phash(file_hashes, threshold=5, progress_callback=None):
     groups = []
     used = set()
+    total = len(file_hashes)
     for i, (f1, h1) in enumerate(file_hashes):
         if f1 in used or h1 is None:
             continue
@@ -302,6 +303,12 @@ def group_by_phash(file_hashes, threshold=5):
         used.add(f1)
         if len(group) > 1:
             groups.append(group)
+        
+        if progress_callback and i % 10 == 0:
+            progress_callback(i + 1, total)
+    
+    if progress_callback:
+        progress_callback(total, total)
     return groups
 
 def find_group_for_index(args):
@@ -323,9 +330,9 @@ def find_group_for_index(args):
         return set(group)
     return None
 
-def group_by_phash_parallel(file_hashes, threshold=5, max_workers=None):
+def group_by_phash_parallel(file_hashes, threshold=5, max_workers=None, progress_callback=None):
     if len(file_hashes) < 200:
-        return group_by_phash(file_hashes, threshold)
+        return group_by_phash(file_hashes, threshold, progress_callback)
 
     # 大規模データではワーカー数を制限
     if max_workers is None:
@@ -473,10 +480,14 @@ def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None,
         threshold = 2 if len(valid_file_hashes) > 15000 else 3 if len(valid_file_hashes) > 5000 else 5
         print(f"[PERF] 使用閾値: {threshold} (ファイル数: {len(valid_file_hashes)})")
         
+        def grouping_progress(current, total_items):
+            if progress_callback:
+                progress_callback(total + current, total + total_items)
+        
         if parallel and len(valid_file_hashes) > 50:
-            groups = group_by_phash_parallel(valid_file_hashes, threshold=threshold)
+            groups = group_by_phash_parallel(valid_file_hashes, threshold=threshold, progress_callback=grouping_progress)
         else:
-            groups = group_by_phash(valid_file_hashes, threshold=threshold)
+            groups = group_by_phash(valid_file_hashes, threshold=threshold, progress_callback=grouping_progress)
 
     # 整合性チェック: グループの妥当性を検証
     validate_groups(groups[:10])  # 最初の10グループを検証

@@ -32,8 +32,34 @@ def create_prime_group_ui(
     """)
     
     # ヘッダー
+    header_hbox = QHBoxLayout()
     header_label = QLabel(f"重複グループ（{len(group)}ファイル）")
     header_label.setStyleSheet("font-size:18px;color:#fff;font-weight:bold;margin-bottom:10px;")
+    header_hbox.addWidget(header_label)
+    
+    dismiss_btn = QPushButton("非表示")
+    dismiss_btn.setFixedSize(100, 50)
+    dismiss_btn.setStyleSheet("""
+        QPushButton {
+            font-size: 12px;
+            color: #fff;
+            background-color: #555;
+            border: 1px solid #777;
+            border-radius: 4px;
+            padding: 4px;
+        }
+        QPushButton:hover {
+            background-color: #666;
+        }
+    """)
+    
+    def dismiss_group_cb():
+        if parent and hasattr(parent, 'dismiss_group'):
+            parent.dismiss_group(group)
+    
+    dismiss_btn.clicked.connect(dismiss_group_cb)
+    header_hbox.addWidget(dismiss_btn)
+    header_hbox.addStretch()
     
     # グリッド
     grid = QGridLayout()
@@ -291,7 +317,7 @@ def create_prime_group_ui(
     layout = QVBoxLayout()
     layout.setSpacing(10)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.addWidget(header_label)
+    layout.addLayout(header_hbox)
     layout.addLayout(grid)
     group_box.setLayout(layout)
     
