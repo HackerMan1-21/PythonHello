@@ -1,5 +1,19 @@
 {
   "exclude": [
-    "BasicSR"
-  ]
+    "**/BasicSR",
+    "**/BasicSR/**",
+    "BasicSR",
+    "BasicSR/**",
+    "**/.history",
+    "**/.mypy_cache",
+    "**/.ruff_cache",
+    "**/movieEditor",
+    "**/cache"
+  ],
+  "ignore": [
+    "**/BasicSR",
+    "**/BasicSR/**"
+  ],
+  "reportMissingImports": "none",
+  "reportMissingTypeStubs": false
 }

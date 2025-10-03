@@ -45,8 +45,18 @@ class FastCache:
                 phash TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS metadata_cache (
+                file_path TEXT PRIMARY KEY,
+                file_size INTEGER,
+                modified_time REAL,
+                width INTEGER,
+                height INTEGER,
+                duration REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_phash ON hash_cache(phash)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_file_path ON hash_cache(file_path)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_metadata_path ON metadata_cache(file_path)")
     
     def _get_hash(self, path):
         return hashlib.md5(path.encode()).hexdigest()
@@ -124,6 +134,38 @@ class FastCache:
                 conn.execute(
                     "INSERT OR REPLACE INTO hash_cache (file_path, file_size, modified_time, phash) VALUES (?, ?, ?, ?)",
                     (file_path, file_size, mtime, phash_str)
+                )
+        except:
+            pass
+    
+    def get_metadata(self, file_path):
+        try:
+            stat = os.stat(file_path)
+            file_size = stat.st_size
+            mtime = stat.st_mtime
+            
+            with sqlite3.connect(self.phash_db_path) as conn:
+                row = conn.execute(
+                    "SELECT width, height, duration FROM metadata_cache WHERE file_path=? AND file_size=? AND modified_time=?",
+                    (file_path, file_size, mtime)
+                ).fetchone()
+                
+                if row:
+                    return {'size': file_size, 'width': row[0], 'height': row[1], 'duration': row[2]}
+        except:
+            pass
+        return None
+    
+    def set_metadata(self, file_path, metadata):
+        try:
+            stat = os.stat(file_path)
+            file_size = stat.st_size
+            mtime = stat.st_mtime
+            
+            with sqlite3.connect(self.phash_db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO metadata_cache (file_path, file_size, modified_time, width, height, duration) VALUES (?, ?, ?, ?, ?, ?)",
+                    (file_path, file_size, mtime, metadata['width'], metadata['height'], metadata['duration'])
                 )
         except:
             pass
@@ -283,13 +325,15 @@ class VirtualThumbnailManager:
         self.gui = gui_instance
         self.worker = BatchThumbnailWorker(FastCache())
         self.pending = set()
+        self.progress_callback = None
     
-    def load_visible_batch(self, paths):
+    def load_visible_batch(self, paths, progress_callback=None):
         visible_paths = [p for p in paths if p not in self.pending]
         if not visible_paths:
             return
         
         self.pending.update(visible_paths)
+        self.progress_callback = progress_callback
         
         # プレースホルダー即座表示
         placeholder = get_placeholder_image((180, 180))
@@ -303,12 +347,19 @@ class VirtualThumbnailManager:
                 btn.setIconSize(QSize(180, 180))
         
         # バッチ処理
+        processed = [0]
+        total = len(visible_paths)
+        
         def update_callback(path, thumb):
             norm_path = os.path.abspath(os.path.normpath(path))
             btn = self.gui.thumb_widget_map.get(norm_path)
             if btn and thumb:
                 QTimer.singleShot(0, lambda: self._update_ui(btn, thumb))
             self.pending.discard(path)
+            
+            processed[0] += 1
+            if self.progress_callback:
+                self.progress_callback(processed[0], total)
         
         self.worker.process_batch(visible_paths, (180, 180), update_callback)
     
