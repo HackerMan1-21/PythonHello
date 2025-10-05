@@ -137,6 +137,7 @@ def get_video_metadata(filepath, cache=None):
         if cached:
             return cached
     
+    cap = None
     try:
         cap = cv2.VideoCapture(filepath)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -144,7 +145,6 @@ def get_video_metadata(filepath, cache=None):
         fps = cap.get(cv2.CAP_PROP_FPS)
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         duration = frame_count / fps if fps > 0 else 0
-        cap.release()
         
         metadata = {'size': os.path.getsize(filepath), 'width': width, 'height': height, 'duration': duration}
         
@@ -154,6 +154,9 @@ def get_video_metadata(filepath, cache=None):
         return metadata
     except:
         return None
+    finally:
+        if cap is not None:
+            cap.release()
 
 def should_compare(meta1, meta2):
     """メタデータによる事前フィルタリング"""
