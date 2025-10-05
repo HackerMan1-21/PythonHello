@@ -67,6 +67,7 @@ def create_prime_group_ui(
     grid.setContentsMargins(0, 0, 0, 0)
 
     max_col = 4
+    visible_cards = []
 
     for idx, f in enumerate(group):
         norm_path = os.path.abspath(os.path.normpath(f))
@@ -287,10 +288,13 @@ def create_prime_group_ui(
                     print(f"Error opening folder: {e}")
             return open_folder
 
-        def make_delete_cb(file_path, card_widget):
+        def make_delete_cb(file_path, card_widget, cards_list, group_widget):
             def delete_file():
                 delete_cb(file_path)
                 card_widget.hide()
+                visible_count = sum(1 for c in cards_list if c.isVisible())
+                if visible_count <= 1:
+                    group_widget.hide()
             return delete_file
 
         open_btn.clicked.connect(make_open_folder(f))
@@ -312,7 +316,7 @@ def create_prime_group_ui(
                 background-color: #c0392b;
             }
         """)
-        del_btn.clicked.connect(make_delete_cb(f, file_card))
+        del_btn.clicked.connect(make_delete_cb(f, file_card, visible_cards, group_box))
 
         btn_hbox.addWidget(open_btn)
         btn_hbox.addWidget(del_btn)
@@ -356,6 +360,7 @@ def create_prime_group_ui(
         row = idx // max_col
         col = idx % max_col
         grid.addWidget(file_card, row, col)
+        visible_cards.append(file_card)
 
         # マップに登録（サイズ更新）
         if thumb_widget_map is not None:
