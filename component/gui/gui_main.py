@@ -362,8 +362,10 @@ class DuplicateFinderGUI(QWidget):
 
     def request_cancel(self):
         if self.worker and self.worker.isRunning():
-            self.worker.terminate()
-            self.worker.wait()
+            self.worker.quit()
+            if not self.worker.wait(3000):  # 3秒でタイムアウト
+                self.worker.terminate()
+                self.worker.wait(1000)
             self.cancel_btn.setEnabled(False)
             QMessageBox.information(self, "キャンセル", "処理をキャンセルしました")
 
@@ -939,8 +941,14 @@ class DuplicateFinderGUI(QWidget):
                     if w is not None:
                         w.setParent(None)
                         w.deleteLater()
+            # イベントループを処理してウィジェットを完全に削除
+            QApplication.processEvents()
+        # 参照を明示的にクリア
         self.group_widgets = []
-        self.thumb_widget_map = {}
+        self.thumb_widget_map.clear()
+        # ガベージコレクション強制実行
+        import gc
+        gc.collect()
 
     def toggle_result_fullscreen(self, checked):
         widgets = [

@@ -54,6 +54,13 @@ class FastCache:
                 duration REAL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS group_cache (
+                folder_hash TEXT PRIMARY KEY,
+                file_list_hash TEXT,
+                use_advanced INTEGER,
+                groups_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_phash ON hash_cache(phash)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_file_path ON hash_cache(file_path)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_metadata_path ON metadata_cache(file_path)")
@@ -166,6 +173,42 @@ class FastCache:
                 conn.execute(
                     "INSERT OR REPLACE INTO metadata_cache (file_path, file_size, modified_time, width, height, duration) VALUES (?, ?, ?, ?, ?, ?)",
                     (file_path, file_size, mtime, metadata['width'], metadata['height'], metadata['duration'])
+                )
+        except:
+            pass
+    
+    def get_group_cache(self, folder, file_list, use_advanced):
+        import hashlib
+        import json
+        folder_hash = hashlib.md5(folder.encode()).hexdigest()
+        file_list_hash = hashlib.md5(''.join(sorted(file_list)).encode()).hexdigest()
+        
+        try:
+            with sqlite3.connect(self.phash_db_path) as conn:
+                row = conn.execute(
+                    "SELECT groups_json FROM group_cache WHERE folder_hash=? AND file_list_hash=? AND use_advanced=?",
+                    (folder_hash, file_list_hash, int(use_advanced))
+                ).fetchone()
+                
+                if row:
+                    print(f"[GROUP CACHE HIT] {folder}")
+                    return json.loads(row[0])
+        except:
+            pass
+        print(f"[GROUP CACHE MISS] {folder}")
+        return None
+    
+    def set_group_cache(self, folder, file_list, use_advanced, groups):
+        import hashlib
+        import json
+        folder_hash = hashlib.md5(folder.encode()).hexdigest()
+        file_list_hash = hashlib.md5(''.join(sorted(file_list)).encode()).hexdigest()
+        
+        try:
+            with sqlite3.connect(self.phash_db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO group_cache (folder_hash, file_list_hash, use_advanced, groups_json) VALUES (?, ?, ?, ?)",
+                    (folder_hash, file_list_hash, int(use_advanced), json.dumps(groups))
                 )
         except:
             pass

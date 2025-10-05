@@ -396,14 +396,19 @@ def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None,
     video_exts = (".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".mpg", ".mpeg", ".3gp")
     files = get_image_and_video_files(folder, image_exts, video_exts)
     print(f"[PERF] 対象ファイル数: {len(files)}")
+    
+    # グループキャッシュチェック
+    from component.thumbnail.thumbnail_util import FastCache
+    cache = FastCache()
+    cached_groups = cache.get_group_cache(folder, files, use_advanced)
+    if cached_groups:
+        print(f"[PERF] キャッシュからグループ読み込み: {len(cached_groups)}グループ")
+        return cached_groups, None
 
     # メモリ制限チェック
     if len(files) > 50000:
         print(f"[WARNING] 大量ファイル検出: {len(files)}件 - ストリーミング処理に切り替え")
         return find_duplicates_streaming(folder, files, progress_callback, parallel)
-
-    from component.thumbnail.thumbnail_util import FastCache
-    cache = FastCache()
 
     file_hashes = []
     total = len(files)
@@ -504,6 +509,10 @@ def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None,
     # 最終整合性チェック
     if len(groups) > 100:
         print(f"[WARNING] グループ数が異常に多い: {len(groups)} (閾値を下げることを推奨)")
+    
+    # グループキャッシュに保存
+    cache.set_group_cache(folder, files, use_advanced, groups)
+    print(f"[PERF] グループをキャッシュに保存: {len(groups)}グループ")
 
     return groups, None
 

@@ -115,8 +115,6 @@ def create_prime_group_ui(
         thumb_btn.clicked.connect(make_detail_cb(f))
         
         # 情報部分（適切なサイズ制約とレイアウト配分）
-        info_widget = QWidget()
-
         
         # ファイル名（完全なパス表示）
         fname = os.path.basename(f)
@@ -142,28 +140,13 @@ def create_prime_group_ui(
         name_label.setMinimumHeight(60)
         name_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         name_label.setWordWrap(True)
-        name_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         name_label.setToolTip(f)
         
         # 動画時間（動画のみ表示）
         duration_label = None
         if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm')):
-            try:
-                import cv2
-                cap = cv2.VideoCapture(f)
-                fps = cap.get(cv2.CAP_PROP_FPS)
-                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-                if fps > 0:
-                    duration_seconds = int(frame_count / fps)
-                    hours = duration_seconds // 3600
-                    minutes = (duration_seconds % 3600) // 60
-                    seconds = duration_seconds % 60
-                    duration_text = f"⏱ {hours:02d}:{minutes:02d}:{seconds:02d}"
-                else:
-                    duration_text = "⏱ 不明"
-                cap.release()
-            except:
-                duration_text = "⏱ 不明"
+            duration_text = "⏱ 動画"
+            # OpenCVによるクラッシュを回避するため、動画時間取得を無効化
             
             duration_label = QLabel(duration_text)
             duration_label.setStyleSheet("""
@@ -174,19 +157,20 @@ def create_prime_group_ui(
                     background-color: #34495e;
                     padding: 7px;
                     border-radius: 3px;
+                    text-align: center;
                 }
             """)
             duration_label.setFixedHeight(60)
             duration_label.setMinimumHeight(35)
             duration_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            duration_label.setAlignment(Qt.AlignCenter)
         
         # ファイルサイズ（見えるサイズ）
         try:
             size_mb = os.path.getsize(f) / (1024 * 1024)
             size_text = f"📁 {size_mb:.1f} MB"
-        except:
+        except OSError as e:
             size_text = "📁 不明"
+            print(f"File size error: {e}")
         
         size_label = QLabel(size_text)
         size_label.setStyleSheet("""
@@ -197,12 +181,12 @@ def create_prime_group_ui(
                 background-color: #34495e;
                 padding: 7px;
                 border-radius: 3px;
+                text-align: center;
             }
         """)
         size_label.setFixedHeight(60)
         size_label.setMinimumHeight(35)
         size_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        size_label.setAlignment(Qt.AlignCenter)
         
         # ボタン（大きく押しやすく）
         btn_hbox = QHBoxLayout()
@@ -229,16 +213,17 @@ def create_prime_group_ui(
         
         def make_open_folder(file_path):
             def open_folder():
-                import subprocess, sys
-                folder = os.path.dirname(file_path)
-                print(f"DEBUG: Opening folder for file: {file_path}")
-                print(f"DEBUG: Folder path: {folder}")
-                if sys.platform.startswith('win'):
-                    subprocess.Popen(['explorer', '/select,', file_path.replace('/', '\\')])
-                elif sys.platform.startswith('darwin'):
-                    subprocess.Popen(['open', folder])
-                else:
-                    subprocess.Popen(['xdg-open', folder])
+                import subprocess, sys, shlex
+                try:
+                    folder = os.path.dirname(os.path.abspath(file_path))
+                    if sys.platform.startswith('win'):
+                        subprocess.Popen(['explorer', '/select,', os.path.normpath(file_path)])
+                    elif sys.platform.startswith('darwin'):
+                        subprocess.Popen(['open', folder])
+                    else:
+                        subprocess.Popen(['xdg-open', folder])
+                except (OSError, subprocess.SubprocessError) as e:
+                    print(f"Error opening folder: {e}")
             return open_folder
         
         def make_delete_cb(file_path):
@@ -284,9 +269,9 @@ def create_prime_group_ui(
         info_vbox = QVBoxLayout()
         info_vbox.setSpacing(0)
         info_vbox.setContentsMargins(0, 0, 0, 0)
-        info_vbox.setAlignment(Qt.AlignTop)
+        # info_vbox.setAlignment(Qt.AlignTop)  # Qt定数エラー回避
         
-        from PyQt5.QtWidgets import QSpacerItem
+        # from PyQt5.QtWidgets import QSpacerItem  # 使用していないのでコメントアウト
         
         info_vbox.addWidget(name_label)
         if duration_label:
@@ -294,7 +279,6 @@ def create_prime_group_ui(
         info_vbox.addWidget(size_label)
         
         # スペーサー削除（無駄な空間を排除）
-        
         info_vbox.addLayout(btn_hbox)
         
         info_widget.setLayout(info_vbox)
