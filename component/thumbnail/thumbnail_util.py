@@ -214,14 +214,49 @@ class FastCache:
             pass
     
     def clear(self):
+        print("[CACHE CLEAR] キャッシュクリア開始")
         self.memory_cache.clear()
+        
+        # DBファイル削除を試みる
         try:
-            os.remove(self.db_path)
-            os.remove(self.phash_db_path)
+            if os.path.exists(self.db_path):
+                os.remove(self.db_path)
+                print(f"[CACHE CLEAR] {self.db_path} 削除成功")
+        except Exception as e:
+            print(f"[CACHE CLEAR] {self.db_path} 削除失敗: {e}")
+            # フォールバック: テーブルをクリア
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute("DELETE FROM thumbs")
+                print(f"[CACHE CLEAR] {self.db_path} テーブルクリア成功")
+            except Exception as e2:
+                print(f"[CACHE CLEAR] {self.db_path} テーブルクリア失敗: {e2}")
+        
+        try:
+            if os.path.exists(self.phash_db_path):
+                os.remove(self.phash_db_path)
+                print(f"[CACHE CLEAR] {self.phash_db_path} 削除成功")
+        except Exception as e:
+            print(f"[CACHE CLEAR] {self.phash_db_path} 削除失敗: {e}")
+            # フォールバック: 全テーブルをクリア
+            try:
+                with sqlite3.connect(self.phash_db_path) as conn:
+                    conn.execute("DELETE FROM hash_cache")
+                    conn.execute("DELETE FROM metadata_cache")
+                    conn.execute("DELETE FROM group_cache")
+                print(f"[CACHE CLEAR] {self.phash_db_path} 全テーブルクリア成功")
+            except Exception as e2:
+                print(f"[CACHE CLEAR] {self.phash_db_path} テーブルクリア失敗: {e2}")
+        
+        # DB再初期化
+        try:
             self._init_db()
             self._init_phash_db()
-        except:
-            pass
+            print("[CACHE CLEAR] DB再初期化成功")
+        except Exception as e:
+            print(f"[CACHE CLEAR] DB再初期化失敗: {e}")
+        
+        print("[CACHE CLEAR] キャッシュクリア完了")
 
 def pil_image_to_qpixmap(img):
     app = QCoreApplication.instance()

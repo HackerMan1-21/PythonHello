@@ -22,6 +22,20 @@ import concurrent.futures
 from component.utils.cache_util import save_cache, load_cache
 from component.utils.file_util import normalize_path
 
+# 定数定義: pHash計算パラメータ
+PHASH_SIZE = 8  # pHashのサイズ (8x8 = 64ビット)
+FRAME_RESIZE_SIZE = 64  # フレームリサイズサイズ (64x64)
+MAX_FRAMES = 5  # 動画から抽出する最大フレーム数
+MAX_FRAME_ATTEMPTS = 20  # フレーム抽出の最大試行回数
+FRAME_SAMPLE_START = 0.1  # サンプリング開始位置 (10%)
+FRAME_SAMPLE_END = 0.9  # サンプリング終了位置 (90%)
+BRIGHTNESS_MIN = 15  # 明るさフィルタ最小値
+BRIGHTNESS_MAX = 240  # 明るさフィルタ最大値
+
+# 定数定義: 重複判定閾値
+THRESHOLD_HIGH_PRECISION = 8  # 高精度モード閾値 (約2.5%の許容誤差、切り抜き・リサイズ対応)
+THRESHOLD_NORMAL = 3  # 通常モード閾値 (約0.9%の許容誤差、5フレームXOR結合後の固定値)
+
 def get_image_phash(filepath, folder=None, cache=None):
     filepath = normalize_path(filepath)
 
@@ -78,17 +92,17 @@ def get_video_semantic_hash(filepath, cache=None):
             frame_hashes = []
             attempts = 0
 
-            while len(frame_hashes) < 5 and attempts < 20:
-                pos = int(total_frames * (0.1 + 0.8 * random.random()))
+            while len(frame_hashes) < MAX_FRAMES and attempts < MAX_FRAME_ATTEMPTS:
+                pos = int(total_frames * (FRAME_SAMPLE_START + (FRAME_SAMPLE_END - FRAME_SAMPLE_START) * random.random()))
                 cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
                 ret, frame = cap.read()
 
                 if ret and frame is not None:
                     mean_val = float(np.mean(frame))  # type: ignore[arg-type]
-                    if 15 < mean_val < 240:
-                        frame = cv2.resize(frame, (64, 64))
+                    if BRIGHTNESS_MIN < mean_val < BRIGHTNESS_MAX:
+                        frame = cv2.resize(frame, (FRAME_RESIZE_SIZE, FRAME_RESIZE_SIZE))
                         pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                        frame_hashes.append(imagehash.phash(pil_img, hash_size=8))
+                        frame_hashes.append(imagehash.phash(pil_img, hash_size=PHASH_SIZE))
 
                 attempts += 1
 
@@ -201,7 +215,7 @@ def group_by_phash_advanced(file_data, metadata_dict, progress_callback=None):
             if hasattr(h1, '__sub__') and hasattr(h2, '__sub__'):
                 try:
                     diff = abs(h1 - h2)
-                    if diff <= 12:
+                    if diff <= THRESHOLD_HIGH_PRECISION:
                         group.append((f2, diff))
                         used.add(f2)
                 except:
@@ -485,8 +499,10 @@ def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None,
         groups = result['level1'] + result['level2'] + result['level3']
         print(f"[ADVANCED] レベル1: {len(result['level1'])}, レベル2: {len(result['level2'])}, レベル3: {len(result['level3'])}")
     else:
-        threshold = 2 if len(valid_file_hashes) > 15000 else 3 if len(valid_file_hashes) > 5000 else 5
-        print(f"[PERF] 使用閾値: {threshold} (ファイル数: {len(valid_file_hashes)})")
+        # 通常モード: ファイル数に依存しない固定閾値を使用
+        # 閾値3は5フレームXOR結合後の値で、約0.9%の許容誤差を意味する
+        threshold = THRESHOLD_NORMAL
+        print(f"[PERF] 使用閾値: {threshold} (固定値、ファイル数: {len(valid_file_hashes)})")
         
         def grouping_progress(current, total_items):
             if progress_callback:

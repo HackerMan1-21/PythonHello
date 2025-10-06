@@ -321,8 +321,7 @@ class DuplicateFinderGUI(QWidget):
         # ...検出実行コード...
 
     def closeEvent(self, a0):  # type: ignore[override]
-        # ウィンドウ閉じる処理
-        if self.worker and hasattr(self.worker, 'isRunning') and self.worker.isRunning():  # type: ignore[attr-defined]
+        if self.worker and hasattr(self.worker, 'isRunning') and callable(getattr(self.worker, 'isRunning', None)) and self.worker.isRunning():  # type: ignore[attr-defined]
             reply = QMessageBox.question(self, 'Message', 'Detection is still running. Do you really want to exit?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.Yes:
                 if a0 is not None:
@@ -361,11 +360,14 @@ class DuplicateFinderGUI(QWidget):
         drop_event(a0, self.processFiles)
 
     def request_cancel(self):
-        if self.worker and self.worker.isRunning():
-            self.worker.quit()
-            if not self.worker.wait(3000):  # 3秒でタイムアウト
-                self.worker.terminate()
-                self.worker.wait(1000)
+        if self.worker and hasattr(self.worker, 'isRunning') and callable(getattr(self.worker, 'isRunning', None)) and self.worker.isRunning():  # type: ignore[attr-defined]
+            if hasattr(self.worker, 'quit'):
+                self.worker.quit()  # type: ignore[attr-defined]
+            if hasattr(self.worker, 'wait') and callable(getattr(self.worker, 'wait', None)):
+                if not self.worker.wait(3000):  # type: ignore[attr-defined]
+                    if hasattr(self.worker, 'terminate'):
+                        self.worker.terminate()  # type: ignore[attr-defined]
+                        self.worker.wait(1000)  # type: ignore[attr-defined]
             self.cancel_btn.setEnabled(False)
             QMessageBox.information(self, "キャンセル", "処理をキャンセルしました")
 
@@ -476,11 +478,15 @@ class DuplicateFinderGUI(QWidget):
         self.worker = DuplicateWorker(folder, use_advanced)
         self.worker.progress.connect(update_progress)
         self.worker.finished.connect(self._on_duplicates_found)
-        self.worker.error.connect(lambda err: QMessageBox.critical(self, "エラー", f"重複検出エラー: {err}") or None)  # type: ignore[func-returns-value]
+        
+        def on_error(err):
+            QMessageBox.critical(self, "エラー", f"重複検出エラー: {err}")
+        
+        self.worker.error.connect(on_error)  # type: ignore[arg-type]
         self.worker.finished.connect(progress_dialog.close)  # type: ignore[arg-type]
         self.worker.error.connect(progress_dialog.close)  # type: ignore[arg-type]
-        self.worker.finished.connect(lambda: self.cancel_btn.setEnabled(False))
-        self.worker.error.connect(lambda: self.cancel_btn.setEnabled(False))
+        self.worker.finished.connect(lambda: self.cancel_btn.setEnabled(False))  # type: ignore[arg-type]
+        self.worker.error.connect(lambda: self.cancel_btn.setEnabled(False))  # type: ignore[arg-type]
         self.cancel_btn.setEnabled(True)
         self.worker.start()
     
@@ -627,9 +633,13 @@ class DuplicateFinderGUI(QWidget):
         self.worker = IncrementalWorker(folder, new_files, self.duplicate_groups, self.last_use_advanced)
         self.worker.progress.connect(update_progress)
         self.worker.finished.connect(self._on_duplicates_found)
-        self.worker.error.connect(lambda err: QMessageBox.critical(self, "エラー", f"差分検出エラー: {err}") or None)
-        self.worker.finished.connect(progress_dialog.close)
-        self.worker.error.connect(progress_dialog.close)
+        
+        def on_inc_error(err):
+            QMessageBox.critical(self, "エラー", f"差分検出エラー: {err}")
+        
+        self.worker.error.connect(on_inc_error)  # type: ignore[arg-type]
+        self.worker.finished.connect(progress_dialog.close)  # type: ignore[arg-type]
+        self.worker.error.connect(progress_dialog.close)  # type: ignore[arg-type]
         self.worker.start()
 
     def update_ui(self, duplicates, folder, elapsed_time=None, eta_time=None, remain_count=None):
@@ -762,7 +772,7 @@ class DuplicateFinderGUI(QWidget):
                     thumb_remain.setText(f"残り: {total - current}件")
                 
                 if current >= total:
-                    QTimer.singleShot(500, thumb_dialog.close)
+                    QTimer.singleShot(500, lambda: thumb_dialog.close())  # type: ignore[arg-type]
             
             thumb_dialog.show()
             self.thumb_manager.load_visible_batch(all_paths, update_thumb_progress)
@@ -854,8 +864,9 @@ class DuplicateFinderGUI(QWidget):
         reply = QMessageBox.question(self, "確認", "サムネイルキャッシュを削除しますか？", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
             try:
-                if self.thumb_cache is not None and hasattr(self.thumb_cache, 'clear'):
-                    self.thumb_cache.clear()  # type: ignore[union-attr]
+                from component.thumbnail.thumbnail_util import FastCache
+                cache = FastCache()
+                cache.clear()
                 QMessageBox.information(self, "完了", "サムネイルキャッシュを削除しました。")
             except Exception as e:
                 QMessageBox.critical(self, "エラー", f"キャッシュ削除エラー: {e}")
