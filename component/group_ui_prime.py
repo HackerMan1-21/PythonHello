@@ -1,10 +1,9 @@
 # Prime Video風カードUI
 from PyQt5.QtWidgets import QGroupBox, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QWidget, QGridLayout, QSizePolicy
-from PyQt5.QtCore import QSize, Qt
-from PyQt5.QtGui import QPixmap, QIcon, QFont
+from PyQt5.QtCore import QSize
+from PyQt5.QtGui import QIcon
 import os
-from component.thumbnail.thumbnail_util import get_thumbnail_for_file, pil_image_to_qpixmap, get_no_thumbnail_image, ThumbnailCache
-from typing import Optional
+from component.thumbnail.thumbnail_util import pil_image_to_qpixmap, get_no_thumbnail_image
 
 def create_prime_group_ui(
     group: list,
@@ -12,7 +11,7 @@ def create_prime_group_ui(
     detail_cb,
     delete_cb,
     compare_cb,
-    thumb_cache: Optional[ThumbnailCache] = None,
+    thumb_cache=None,
     defer_queue=None,
     thumb_widget_map=None,
     parent=None,
@@ -72,7 +71,7 @@ def create_prime_group_ui(
     for idx, f in enumerate(group):
         norm_path = os.path.abspath(os.path.normpath(f))
 
-        # カード全体（情報部分に十分なスペース確保）
+        # カード全体
         file_card = QWidget()
         file_card.setFixedSize(355, 300)
         file_card.setContentsMargins(0, 0, 0, 0)
@@ -93,7 +92,7 @@ def create_prime_group_ui(
         card_hbox.setSpacing(0)
         card_hbox.setContentsMargins(0, 0, 0, 0)
 
-        # サムネイル（16:9比率、コンパクト）
+        # サムネイル
         thumb_btn = QPushButton()
         thumb_btn.setFixedSize(150, 290)
         thumb_btn.setIcon(QIcon(pil_image_to_qpixmap(get_no_thumbnail_image((150, 290)))))
@@ -114,11 +113,7 @@ def create_prime_group_ui(
 
         thumb_btn.clicked.connect(make_detail_cb(f))
 
-        # 情報部分（適切なサイズ制約とレイアウト配分）
-
-        # ファイル名（完全なパス表示）
-        fname = os.path.basename(f)
-        # 相対パスで表示（最後の4階層）
+        # ファイル名
         path_parts = f.replace('\\', '/').split('/')
         if len(path_parts) >= 4:
             display_name = '/'.join(path_parts[-4:])
@@ -142,7 +137,7 @@ def create_prime_group_ui(
         name_label.setWordWrap(True)
         name_label.setToolTip(f)
 
-        # 動画情報（時間と解像度を同時取得）
+        # 動画情報
         duration_label = None
         video_resolution_text = None
         if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm')):
@@ -152,7 +147,6 @@ def create_prime_group_ui(
                 import cv2
                 cap = cv2.VideoCapture(f)
                 if cap.isOpened():
-                    # 時間取得
                     fps = cap.get(cv2.CAP_PROP_FPS)
                     frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
                     if fps > 0 and frame_count > 0:
@@ -162,7 +156,6 @@ def create_prime_group_ui(
                         seconds = duration_seconds % 60
                         duration_text = f"⏱ {hours:02d}:{minutes:02d}:{seconds:02d}"
 
-                    # 解像度取得
                     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                     if width > 0 and height > 0:
@@ -189,10 +182,20 @@ def create_prime_group_ui(
             duration_label.setMinimumHeight(70)
             duration_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        # ファイルサイズ（見えるサイズ）
+        # ファイルサイズ
         try:
-            size_mb = os.path.getsize(f) / (1024 * 1024)
-            size_text = f"📁 {size_mb:.1f} MB"
+            size_bytes = os.path.getsize(f)
+            if size_bytes < 1024:
+                size_text = f"📁 {size_bytes} B"
+            elif size_bytes < 1024 * 1024:
+                size_kb = size_bytes / 1024
+                size_text = f"📁 {size_kb:.1f} KB"
+            elif size_bytes < 1024 * 1024 * 1024:
+                size_mb = size_bytes / (1024 * 1024)
+                size_text = f"📁 {size_mb:.1f} MB"
+            else:
+                size_gb = size_bytes / (1024 * 1024 * 1024)
+                size_text = f"📁 {size_gb:.2f} GB"
         except OSError as e:
             size_text = "📁 不明"
             print(f"File size error: {e}")
@@ -213,11 +216,10 @@ def create_prime_group_ui(
         size_label.setMinimumHeight(70)
         size_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        # フレーム解像度（動画・画像のみ表示）
+        # 解像度
         resolution_label = None
         resolution_text = "📐 不明"
 
-        # 画像ファイルの解像度取得
         if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff')):
             try:
                 from PIL import Image
@@ -226,14 +228,11 @@ def create_prime_group_ui(
                     resolution_text = f"📐 {width}×{height}"
             except Exception as e:
                 print(f"Image resolution error: {e}")
-
-        # 動画の場合は上で取得済み
         elif f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm')):
             if video_resolution_text:
                 resolution_text = video_resolution_text
 
         if resolution_text != "📐 不明" or video_resolution_text:
-
             resolution_label = QLabel(resolution_text)
             resolution_label.setStyleSheet("""
                 QLabel {
@@ -250,7 +249,7 @@ def create_prime_group_ui(
             resolution_label.setMinimumHeight(70)
             resolution_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        # ボタン（大きく押しやすく）
+        # ボタン
         btn_hbox = QHBoxLayout()
         btn_hbox.setSpacing(0)
         btn_hbox.setContentsMargins(0, 0, 0, 0)
@@ -275,7 +274,7 @@ def create_prime_group_ui(
 
         def make_open_folder(file_path):
             def open_folder():
-                import subprocess, sys, shlex
+                import subprocess, sys
                 try:
                     folder = os.path.dirname(os.path.abspath(file_path))
                     if sys.platform.startswith('win'):
@@ -335,9 +334,6 @@ def create_prime_group_ui(
         info_vbox = QVBoxLayout()
         info_vbox.setSpacing(0)
         info_vbox.setContentsMargins(0, 0, 0, 0)
-        # info_vbox.setAlignment(Qt.AlignTop)  # Qt定数エラー回避
-
-        # from PyQt5.QtWidgets import QSpacerItem  # 使用していないのでコメントアウト
 
         info_vbox.addWidget(name_label)
         if duration_label:
@@ -345,13 +341,10 @@ def create_prime_group_ui(
         info_vbox.addWidget(size_label)
         if resolution_label:
             info_vbox.addWidget(resolution_label)
-
-        # スペーサー削除（無駄な空間を排除）
         info_vbox.addLayout(btn_hbox)
 
         info_widget.setLayout(info_vbox)
 
-        # レイアウト組み立て（横並び）
         card_hbox.addWidget(thumb_btn)
         card_hbox.addWidget(info_widget)
 
@@ -362,7 +355,6 @@ def create_prime_group_ui(
         grid.addWidget(file_card, row, col)
         visible_cards.append(file_card)
 
-        # マップに登録（サイズ更新）
         if thumb_widget_map is not None:
             thumb_widget_map[norm_path] = thumb_btn
 
