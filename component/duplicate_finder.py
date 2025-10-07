@@ -25,21 +25,20 @@ from component.utils.file_util import normalize_path
 # 定数定義: pHash計算パラメータ
 # pHashサイズを16x16に拡張（情報量4倍、誤検出率大幅低減）
 PHASH_SIZE = 16  # pHashのサイズ (16x16 = 256ビット、8x8の4倍の情報量)
-# フレームリサイズを128x128に拡張（4K動画等の高解像度対応、ディテール保持）
 FRAME_RESIZE_SIZE = 128  # フレームリサイズサイズ (128x128、64x64の4倍の情報量)
-MAX_FRAMES = 5  # 動画から抽出する最大フレーム数
-MAX_FRAME_ATTEMPTS = 20  # フレーム抽出の最大試行回数
-FRAME_SAMPLE_START = 0.1  # サンプリング開始位置 (10%)
-FRAME_SAMPLE_END = 0.9  # サンプリング終了位置 (90%)
-BRIGHTNESS_MIN = 15  # 明るさフィルタ最小値
-BRIGHTNESS_MAX = 200  # 明るさフィルタ最大値（240→200に変更、白飛び防止）
+MAX_FRAMES = 10  # 動画から抽出する最大フレーム数（切り抜き・結合検出に必須）
+MAX_FRAME_ATTEMPTS = 30  # フレーム抽出の最大試行回数（10フレーム対応）
+FRAME_SAMPLE_START = 0.05  # サンプリング開始位置 (5%、冒頭スキップ最小化)
+FRAME_SAMPLE_END = 0.95  # サンプリング終了位置 (95%、広範囲カバー)
+BRIGHTNESS_MIN = 10  # 明るさフィルタ最小値（暗いシーン対応）
+BRIGHTNESS_MAX = 245  # 明るさフィルタ最大値（明るいシーン対応）
 
 # 定数定義: 重複判定閾値（16x16対応、厳格化）
 # 16x16 (256ビット) では情報量が4倍、閾値は慎重に設定
 # - 高精度モード: 16 (約6.25%の許容誤差、切り抜き・リサイズ対応)
 # - 通常モード: 8 (約3.1%の許容誤差、ほぼ同一のみ)
-THRESHOLD_HIGH_PRECISION = 16  # 高精度モード閾値 (32→16に厳格化)
-THRESHOLD_NORMAL = 8  # 通常モード閾値 (12→8に厳格化)
+THRESHOLD_HIGH_PRECISION = 60  # 高精度モード閾値（10フレーム×256ビット対応、切り抜き・結合検出）
+THRESHOLD_NORMAL = 25  # 通常モード閾値（10フレーム×256ビット対応）
 
 # 定数定義: メタデータフィルタ閾値
 # 設計方針:
@@ -51,9 +50,9 @@ THRESHOLD_NORMAL = 8  # 通常モード閾値 (12→8に厳格化)
 # - ショート動画化（1/30〜1/50）にも対応
 # - 極端な差（100倍超）のみ除外
 # - pHash判定が本質的な類似度判定を行う
-METADATA_RESOLUTION_RATIO_MAX = 2.5   # 解像度比の上限（厳格維持）
-METADATA_FILESIZE_RATIO_MAX = 50      # ファイルサイズ比の上限（緩和）
-METADATA_DURATION_RATIO_MAX = 50      # 動画長比の上限（緩和）
+METADATA_RESOLUTION_RATIO_MAX = 3.0   # 解像度比の上限（緩和）
+METADATA_FILESIZE_RATIO_MAX = 100     # ファイルサイズ比の上限（結合動画対応）
+METADATA_DURATION_RATIO_MAX = 100     # 動画長比の上限（結合動画対応）
 
 def get_image_phash(filepath, folder=None, cache=None):
     filepath = normalize_path(filepath)
@@ -199,8 +198,8 @@ def is_uniform_video_hash(phash):
     ones_count = hash_array.sum()
     # 16x16では256ビットなので、8x8時の4倍に調整
     # 8x8: < 5 or > 59 (64ビット中)
-    # 16x16: < 20 or > 236 (256ビット中)
-    return ones_count < 20 or ones_count > 236
+    # 16x16: < 25 or > 230 (256ビット中、最適化)
+    return ones_count < 25 or ones_count > 230
 
 def get_video_metadata(filepath, cache=None):
     """動画メタデータ取得（キャッシュ対応）"""
@@ -616,8 +615,8 @@ def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None,
     print(f"[PERF] グループ化: {group_elapsed:.2f}秒, 重複グループ: {len(groups)}")
     
     if error_files:
-        groups.append(error_files)
-        print(f"[PERF] エラーファイル: {len(error_files)}")
+        print(f"[WARNING] pHash計算失敗ファイル: {len(error_files)}件 (グループ化から除外)")
+        print(f"[INFO] 失敗理由: 明るさフィルタ除外、コーデック非対応、破損ファイル等")
 
     print(f"[PERF] 総処理時間: {time.time() - hash_start:.2f}秒")
 
