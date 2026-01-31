@@ -2,7 +2,7 @@ import os
 import threading
 import sqlite3
 import hashlib
-from typing import cast
+from typing import cast, Dict, List, Tuple
 from PIL import Image, ImageDraw
 from PIL.Image import Resampling
 import cv2
@@ -22,11 +22,11 @@ class FastCache:
         self.memory_cache = {}
         self.cache = self.memory_cache  # 後方互換性
         self.max_memory = 1000
-        
+
         # pHashキャッシュ用DB初期化
         self.phash_db_path = os.path.join(cache_dir, "phash.db")
         self._init_phash_db()
-    
+
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""CREATE TABLE IF NOT EXISTS thumbs (
@@ -35,7 +35,7 @@ class FastCache:
                 mtime REAL,
                 data BLOB
             )""")
-    
+
     def _init_phash_db(self):
         with sqlite3.connect(self.phash_db_path) as conn:
             conn.execute("""CREATE TABLE IF NOT EXISTS hash_cache (
@@ -64,24 +64,24 @@ class FastCache:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_phash ON hash_cache(phash)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_file_path ON hash_cache(file_path)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_metadata_path ON metadata_cache(file_path)")
-    
+
     def _get_hash(self, path):
         return hashlib.md5(path.encode()).hexdigest()
-    
+
     def get(self, path):
         if path in self.memory_cache:
             return self.memory_cache[path]
-        
+
         try:
             mtime = os.path.getmtime(path)
             path_hash = self._get_hash(path)
-            
+
             with sqlite3.connect(self.db_path) as conn:
                 row = conn.execute(
                     "SELECT data FROM thumbs WHERE path_hash=? AND mtime=?",
                     (path_hash, mtime)
                 ).fetchone()
-                
+
                 if row:
                     import pickle
                     thumb = pickle.loads(row[0])
@@ -91,38 +91,38 @@ class FastCache:
         except:
             pass
         return None
-    
+
     def set(self, path, thumb):
         try:
             mtime = os.path.getmtime(path)
             path_hash = self._get_hash(path)
-            
+
             import pickle
             data = pickle.dumps(thumb)
-            
+
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(
                     "INSERT OR REPLACE INTO thumbs (path_hash, path, mtime, data) VALUES (?, ?, ?, ?)",
                     (path_hash, path, mtime, data)
                 )
-            
+
             if len(self.memory_cache) < self.max_memory:
                 self.memory_cache[path] = thumb
         except:
             pass
-    
+
     def get_phash(self, file_path):
         try:
             stat = os.stat(file_path)
             file_size = stat.st_size
             mtime = stat.st_mtime
-            
+
             with sqlite3.connect(self.phash_db_path) as conn:
                 row = conn.execute(
                     "SELECT phash FROM hash_cache WHERE file_path=? AND file_size=? AND modified_time=?",
                     (file_path, file_size, mtime)
                 ).fetchone()
-                
+
                 if row:
                     print(f"[pHash cache HIT] {file_path}")
                     return row[0]
@@ -130,13 +130,13 @@ class FastCache:
             pass
         print(f"[pHash cache MISS] {file_path}")
         return None
-    
+
     def set_phash(self, file_path, phash_str):
         try:
             stat = os.stat(file_path)
             file_size = stat.st_size
             mtime = stat.st_mtime
-            
+
             with sqlite3.connect(self.phash_db_path) as conn:
                 conn.execute(
                     "INSERT OR REPLACE INTO hash_cache (file_path, file_size, modified_time, phash) VALUES (?, ?, ?, ?)",
@@ -144,31 +144,31 @@ class FastCache:
                 )
         except:
             pass
-    
+
     def get_metadata(self, file_path):
         try:
             stat = os.stat(file_path)
             file_size = stat.st_size
             mtime = stat.st_mtime
-            
+
             with sqlite3.connect(self.phash_db_path) as conn:
                 row = conn.execute(
                     "SELECT width, height, duration FROM metadata_cache WHERE file_path=? AND file_size=? AND modified_time=?",
                     (file_path, file_size, mtime)
                 ).fetchone()
-                
+
                 if row:
                     return {'size': file_size, 'width': row[0], 'height': row[1], 'duration': row[2]}
         except:
             pass
         return None
-    
+
     def set_metadata(self, file_path, metadata):
         try:
             stat = os.stat(file_path)
             file_size = stat.st_size
             mtime = stat.st_mtime
-            
+
             with sqlite3.connect(self.phash_db_path) as conn:
                 conn.execute(
                     "INSERT OR REPLACE INTO metadata_cache (file_path, file_size, modified_time, width, height, duration) VALUES (?, ?, ?, ?, ?, ?)",
@@ -176,20 +176,20 @@ class FastCache:
                 )
         except:
             pass
-    
+
     def get_group_cache(self, folder, file_list, use_advanced):
         import hashlib
         import json
         folder_hash = hashlib.md5(folder.encode()).hexdigest()
         file_list_hash = hashlib.md5(''.join(sorted(file_list)).encode()).hexdigest()
-        
+
         try:
             with sqlite3.connect(self.phash_db_path) as conn:
                 row = conn.execute(
                     "SELECT groups_json FROM group_cache WHERE folder_hash=? AND file_list_hash=? AND use_advanced=?",
                     (folder_hash, file_list_hash, int(use_advanced))
                 ).fetchone()
-                
+
                 if row:
                     print(f"[GROUP CACHE HIT] {folder}")
                     return json.loads(row[0])
@@ -197,13 +197,13 @@ class FastCache:
             pass
         print(f"[GROUP CACHE MISS] {folder}")
         return None
-    
+
     def set_group_cache(self, folder, file_list, use_advanced, groups):
         import hashlib
         import json
         folder_hash = hashlib.md5(folder.encode()).hexdigest()
         file_list_hash = hashlib.md5(''.join(sorted(file_list)).encode()).hexdigest()
-        
+
         try:
             with sqlite3.connect(self.phash_db_path) as conn:
                 conn.execute(
@@ -212,11 +212,11 @@ class FastCache:
                 )
         except:
             pass
-    
+
     def clear(self):
         print("[CACHE CLEAR] キャッシュクリア開始")
         self.memory_cache.clear()
-        
+
         # DBファイル削除を試みる
         try:
             if os.path.exists(self.db_path):
@@ -231,7 +231,7 @@ class FastCache:
                 print(f"[CACHE CLEAR] {self.db_path} テーブルクリア成功")
             except Exception as e2:
                 print(f"[CACHE CLEAR] {self.db_path} テーブルクリア失敗: {e2}")
-        
+
         try:
             if os.path.exists(self.phash_db_path):
                 os.remove(self.phash_db_path)
@@ -247,7 +247,7 @@ class FastCache:
                 print(f"[CACHE CLEAR] {self.phash_db_path} 全テーブルクリア成功")
             except Exception as e2:
                 print(f"[CACHE CLEAR] {self.phash_db_path} テーブルクリア失敗: {e2}")
-        
+
         # DB再初期化
         try:
             self._init_db()
@@ -255,7 +255,7 @@ class FastCache:
             print("[CACHE CLEAR] DB再初期化成功")
         except Exception as e:
             print(f"[CACHE CLEAR] DB再初期化失敗: {e}")
-        
+
         print("[CACHE CLEAR] キャッシュクリア完了")
 
 def pil_image_to_qpixmap(img):
@@ -293,20 +293,20 @@ def get_thumbnail_for_file(filepath, size=(180, 180), cache=None):
         cached = cache.get(filepath)
         if cached:
             return cached
-    
+
     try:
         # ファイル存在チェック
         if not os.path.exists(filepath):
             return get_no_thumbnail_image(size)
-        
+
         ext = os.path.splitext(filepath)[1].lower()
-        
+
         if ext in ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm'):
             cap = cv2.VideoCapture(filepath)
             if not cap.isOpened():
                 cap.release()
                 return get_no_thumbnail_image(size)
-            
+
             # 複数フレームを試行
             ret = False
             frame = None
@@ -315,9 +315,9 @@ def get_thumbnail_for_file(filepath, size=(180, 180), cache=None):
                 ret, frame = cap.read()
                 if ret and frame is not None and frame.size > 0:
                     break
-            
+
             cap.release()
-            
+
             if ret and frame is not None:
                 # フレームの有効性チェック
                 if frame.shape[0] > 0 and frame.shape[1] > 0:
@@ -330,7 +330,7 @@ def get_thumbnail_for_file(filepath, size=(180, 180), cache=None):
                     if cache:
                         cache.set(filepath, result)
                     return result
-                    
+
         elif ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
             with Image.open(filepath) as img:
                 # 画像の有効性チェック
@@ -344,8 +344,59 @@ def get_thumbnail_for_file(filepath, size=(180, 180), cache=None):
                     return result
     except Exception as e:
         print(f"[THUMB ERROR] {filepath}: {e}")
-    
+
     return get_no_thumbnail_image(size)
+
+# プレビュー用の簡易キャッシュ（動画のみ）
+_preview_cache: Dict[Tuple[str, Tuple[int, int], int], List[Image.Image]] = {}
+_preview_cache_lock = threading.Lock()
+
+def get_video_preview_frames(filepath: str, size=(180, 180), frame_count: int = 4) -> List[Image.Image]:
+    """動画の複数フレームをプレビュー用に取得する。
+
+    返り値:
+        PIL.Image のリスト（frame_count 個以下）。取得できなければ空リスト。
+    """
+    key = (filepath, (size[0], size[1]), frame_count)
+    with _preview_cache_lock:
+        cached = _preview_cache.get(key)
+    if cached is not None:
+        return cached
+
+    frames: List[Image.Image] = []
+    cap = None
+    try:
+        if not os.path.exists(filepath):
+            return frames
+        cap = cv2.VideoCapture(filepath)
+        if not cap.isOpened():
+            return frames
+
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if total <= 0:
+            total = frame_count * 30
+        step = max(1, total // (frame_count + 1))
+
+        for idx in range(frame_count):
+            target = min(total - 1, (idx + 1) * step)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, float(target))
+            ret, frame = cap.read()
+            if not ret or frame is None or frame.size == 0:
+                continue
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(rgb)
+            pil_img.thumbnail(size, Resampling.LANCZOS)
+            canvas = Image.new("RGB", size, color=cast(int, (40, 40, 40)))  # type: ignore[arg-type]
+            offset = ((size[0] - pil_img.width) // 2, (size[1] - pil_img.height) // 2)
+            canvas.paste(pil_img, offset)
+            frames.append(canvas)
+
+        with _preview_cache_lock:
+            _preview_cache[key] = frames
+        return frames
+    finally:
+        if cap is not None:
+            cap.release()
 
 class BatchThumbnailWorker:
     def __init__(self, cache=None, max_workers=None):
@@ -355,10 +406,10 @@ class BatchThumbnailWorker:
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
         self.processed_count = 0
         self.error_count = 0
-    
+
     def process_batch(self, paths, size, callback):
         print(f"[THUMB] バッチ処理開始: {len(paths)}ファイル")
-        
+
         def process_single(path: str):
             try:
                 thumb = get_thumbnail_for_file(path, size, self.cache)
@@ -371,14 +422,14 @@ class BatchThumbnailWorker:
                 print(f"[THUMB ERROR] {os.path.basename(path)}: {e}")
                 self.error_count += 1
                 return path, get_no_thumbnail_image(size)
-        
+
         # 大規模データではバッチサイズを制限
         batch_size = 50 if len(paths) > 1000 else len(paths)
-        
+
         for i in range(0, len(paths), batch_size):
             batch = paths[i:i+batch_size]
             futures = [self.executor.submit(process_single, path) for path in batch]
-            
+
             for future in concurrent.futures.as_completed(futures):
                 try:
                     path, thumb = future.result(timeout=30)  # 30秒タイムアウト
@@ -388,9 +439,9 @@ class BatchThumbnailWorker:
                     print(f"[THUMB TIMEOUT] {timeout_err}")
                 except Exception as e:
                     print(f"[THUMB CALLBACK ERROR] {e}")
-        
+
         print(f"[THUMB] 処理完了: 成功{self.processed_count}, エラー{self.error_count}")
-    
+
     def shutdown(self):
         print(f"[THUMB] シャットダウン: 成功{self.processed_count}, エラー{self.error_count}")
         self.executor.shutdown(wait=False)
@@ -404,43 +455,43 @@ class VirtualThumbnailManager:
         self.worker = BatchThumbnailWorker(FastCache())
         self.pending = set()
         self.progress_callback = None
-    
+
     def load_visible_batch(self, paths, progress_callback=None):
         visible_paths = [p for p in paths if p not in self.pending]
         if not visible_paths:
             return
-        
+
         self.pending.update(visible_paths)
         self.progress_callback = progress_callback
-        
+
         # プレースホルダー即座表示
         placeholder = get_placeholder_image((180, 180))
         placeholder_pix = pil_image_to_qpixmap(placeholder)
-        
+
         for path in visible_paths:
             norm_path = os.path.abspath(os.path.normpath(path))
             btn = self.gui.thumb_widget_map.get(norm_path)
             if btn:
                 btn.setIcon(QIcon(placeholder_pix))
                 btn.setIconSize(QSize(180, 180))
-        
+
         # バッチ処理
         processed = [0]
         total = len(visible_paths)
-        
+
         def update_callback(path, thumb):
             norm_path = os.path.abspath(os.path.normpath(path))
             btn = self.gui.thumb_widget_map.get(norm_path)
             if btn and thumb:
                 QTimer.singleShot(0, lambda: self._update_ui(btn, thumb))
             self.pending.discard(path)
-            
+
             processed[0] += 1
             if self.progress_callback:
                 self.progress_callback(processed[0], total)
-        
+
         self.worker.process_batch(visible_paths, (180, 180), update_callback)
-    
+
     def _update_ui(self, btn, thumb):
         try:
             pix = pil_image_to_qpixmap(thumb)

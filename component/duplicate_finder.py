@@ -38,7 +38,7 @@ BRIGHTNESS_MAX = 245  # 明るさフィルタ最大値（明るいシーン対�
 # - 高精度モード: 16 (約6.25%の許容誤差、切り抜き・リサイズ対応)
 # - 通常モード: 8 (約3.1%の許容誤差、ほぼ同一のみ)
 THRESHOLD_HIGH_PRECISION = 35  # 高精度モード閾値（10フレーム×256ビット対応、誤検出防止）
-THRESHOLD_NORMAL = 20  # 通常モード閾値（10フレーム×256ビット対応、厳格）
+THRESHOLD_NORMAL = 8  # 通常モード閾値（1フレームあたり256ビットの約3%）
 
 # 定数定義: メタデータフィルタ閾値
 # 設計方針:
@@ -85,7 +85,7 @@ def get_image_phash(filepath, folder=None, cache=None):
             return None
 
     print(f"[DEBUG] キャッシュタイプチェック: cache={'None' if cache is None else 'OK'}, has_get_phash={hasattr(cache, 'get_phash') if cache else False}")
-    
+
     if cache is not None and not hasattr(cache, 'get_phash'):
         print(f"[DEBUG] 旧キャッシュパス")
         if filepath in cache:
@@ -99,7 +99,7 @@ def get_image_phash(filepath, folder=None, cache=None):
     print(f"[DEBUG] calc_func結果: {os.path.basename(filepath)}, result={'None' if result is None else 'OK'}")
     return result
 
-def get_video_semantic_hash(filepath, cache=None):
+def get_video_semantic_hash(filepath, cache=None, use_advanced=False):
     """動画の意味的ハッシュを計算（複数フレーム+メタデータ）"""
     print(f"[DEBUG] get_video_semantic_hash開始: {os.path.basename(filepath)}")
     try:
@@ -125,7 +125,6 @@ def get_video_semantic_hash(filepath, cache=None):
     def calc_func(path):
         try:
             import numpy as np
-            import random
 
             if not os.path.exists(path):
                 print(f"[ERROR] 動画ファイルが存在しません: {os.path.basename(path)}")
@@ -136,37 +135,53 @@ def get_video_semantic_hash(filepath, cache=None):
                 print(f"[ERROR] 動画を開けません: {os.path.basename(path)}")
                 cap.release()
                 return None
-            
+
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             if total_frames <= 0:
                 print(f"[ERROR] フレーム数が0: {os.path.basename(path)}")
                 cap.release()
                 return None
 
-            random.seed(int(os.path.getsize(path)))
             frame_hashes = []
-            attempts = 0
 
-            while len(frame_hashes) < MAX_FRAMES and attempts < MAX_FRAME_ATTEMPTS:
-                pos = int(total_frames * (FRAME_SAMPLE_START + (FRAME_SAMPLE_END - FRAME_SAMPLE_START) * random.random()))
-                cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
-                ret, frame = cap.read()
+            # 高速モード: 等間隔サンプリング
+            if not use_advanced:
+                for i in range(MAX_FRAMES):
+                    ratio = FRAME_SAMPLE_START + (FRAME_SAMPLE_END - FRAME_SAMPLE_START) * i / (MAX_FRAMES - 1)
+                    pos = int(total_frames * ratio)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
+                    ret, frame = cap.read()
 
-                if ret and frame is not None:
-                    mean_val = float(np.mean(frame))  # type: ignore[arg-type]
-                    if BRIGHTNESS_MIN < mean_val < BRIGHTNESS_MAX:
-                        frame = cv2.resize(frame, (FRAME_RESIZE_SIZE, FRAME_RESIZE_SIZE))
-                        pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                        frame_hashes.append(imagehash.phash(pil_img, hash_size=PHASH_SIZE))
+                    if ret and frame is not None:
+                        mean_val = float(np.mean(frame))  # type: ignore[arg-type]
+                        if BRIGHTNESS_MIN < mean_val < BRIGHTNESS_MAX:
+                            frame = cv2.resize(frame, (FRAME_RESIZE_SIZE, FRAME_RESIZE_SIZE))
+                            pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                            frame_hashes.append(imagehash.phash(pil_img, hash_size=PHASH_SIZE))
+            # 高精度モード: ランダムサンプリング
+            else:
+                import random
+                random.seed(int(os.path.getsize(path)))
+                attempts = 0
+                while len(frame_hashes) < MAX_FRAMES and attempts < MAX_FRAME_ATTEMPTS:
+                    pos = int(total_frames * (FRAME_SAMPLE_START + (FRAME_SAMPLE_END - FRAME_SAMPLE_START) * random.random()))
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
+                    ret, frame = cap.read()
 
-                attempts += 1
+                    if ret and frame is not None:
+                        mean_val = float(np.mean(frame))  # type: ignore[arg-type]
+                        if BRIGHTNESS_MIN < mean_val < BRIGHTNESS_MAX:
+                            frame = cv2.resize(frame, (FRAME_RESIZE_SIZE, FRAME_RESIZE_SIZE))
+                            pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                            frame_hashes.append(imagehash.phash(pil_img, hash_size=PHASH_SIZE))
+                    attempts += 1
 
             cap.release()
 
             if not frame_hashes:
-                print(f"[ERROR] 有効なフレームが抽出できません: {os.path.basename(path)} (total_frames={total_frames}, attempts={attempts})")
+                print(f"[ERROR] 有効なフレームが抽出できません: {os.path.basename(path)} (total_frames={total_frames})")
                 return None
-            
+
             combined_hash = frame_hashes[0]
             for h in frame_hashes[1:]:
                 combined_hash = imagehash.ImageHash(combined_hash.hash ^ h.hash)
@@ -180,7 +195,7 @@ def get_video_semantic_hash(filepath, cache=None):
             import traceback
             traceback.print_exc()
         return None
-    
+
     print(f"[DEBUG] calc_func呼び出し: {os.path.basename(filepath)}")
     return calc_func(filepath)
 
@@ -207,7 +222,7 @@ def get_video_metadata(filepath, cache=None):
         cached = cache.get_metadata(filepath)
         if cached:
             return cached
-    
+
     cap = None
     try:
         cap = cv2.VideoCapture(filepath)
@@ -216,12 +231,12 @@ def get_video_metadata(filepath, cache=None):
         fps = cap.get(cv2.CAP_PROP_FPS)
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         duration = frame_count / fps if fps > 0 else 0
-        
+
         metadata = {'size': os.path.getsize(filepath), 'width': width, 'height': height, 'duration': duration}
-        
+
         if cache is not None and hasattr(cache, 'set_metadata'):
             cache.set_metadata(filepath, metadata)
-        
+
         return metadata
     except:
         return None
@@ -231,7 +246,7 @@ def get_video_metadata(filepath, cache=None):
 
 def should_compare(meta1, meta2):
     """メタデータによる事前フィルタリング
-    
+
     解像度重視フィルタ:
     - 解像度比: 2.5倍以内（厳格維持）
     - ファイルサイズ比: 50倍以内（緩和）
@@ -239,23 +254,23 @@ def should_compare(meta1, meta2):
     """
     if meta1 is None or meta2 is None:
         return True
-    
+
     # ファイルサイズ比チェック（50倍まで許容）
     size_ratio = max(meta1['size'], meta2['size']) / max(min(meta1['size'], meta2['size']), 1)
     if size_ratio > METADATA_FILESIZE_RATIO_MAX:
         return False
-    
+
     # 解像度比チェック（2.5倍まで許容、厳格維持）
     width_ratio = max(meta1['width'], meta2['width']) / max(min(meta1['width'], meta2['width']), 1)
     height_ratio = max(meta1['height'], meta2['height']) / max(min(meta1['height'], meta2['height']), 1)
     if width_ratio > METADATA_RESOLUTION_RATIO_MAX or height_ratio > METADATA_RESOLUTION_RATIO_MAX:
         return False
-    
+
     # 動画長比チェック（50倍まで許容）
     duration_ratio = max(meta1['duration'], meta2['duration']) / max(min(meta1['duration'], meta2['duration']), 0.1)
     if duration_ratio > METADATA_DURATION_RATIO_MAX:
         return False
-    
+
     return True
 
 def group_by_phash_advanced(file_data, metadata_dict, progress_callback=None):
@@ -263,26 +278,26 @@ def group_by_phash_advanced(file_data, metadata_dict, progress_callback=None):
     level1, level2, level3 = [], [], []
     used = set()
     total = len(file_data)
-    
+
     for i, (f1, h1) in enumerate(file_data):
         if f1 in used or h1 is None:
             continue
-        
+
         if is_uniform_video_hash(h1):
             print(f"[SKIP] 単色動画をスキップ: {os.path.basename(f1)}")
             continue
-        
+
         meta1 = metadata_dict.get(f1)
         group = [(f1, 0)]
         compared_count = 0
-        
+
         for j, (f2, h2) in enumerate(file_data):
             if i == j or f2 in used or h2 is None:
                 continue
-            
+
             if is_uniform_video_hash(h2):
                 continue
-            
+
             meta2 = metadata_dict.get(f2)
             if not should_compare(meta1, meta2):
                 if compared_count < 3:
@@ -290,7 +305,7 @@ def group_by_phash_advanced(file_data, metadata_dict, progress_callback=None):
                 compared_count += 1
                 continue
             compared_count += 1
-            
+
             if hasattr(h1, '__sub__') and hasattr(h2, '__sub__'):
                 try:
                     diff = abs(h1 - h2)
@@ -302,26 +317,26 @@ def group_by_phash_advanced(file_data, metadata_dict, progress_callback=None):
                         print(f"[NEAR] {os.path.basename(f1)} <-> {os.path.basename(f2)}: diff={diff} (閾値外)")
                 except:
                     continue
-        
+
         used.add(f1)
-        
+
         if len(group) > 1:
             files_only = [f for f, _ in group]
             max_diff = max(d for _, d in group)
-            
+
             if max_diff <= 5:
                 level1.append(files_only)
             elif max_diff <= 16:
                 level2.append(files_only)
             else:
                 level3.append(files_only)
-        
+
         if progress_callback and i % 10 == 0:
             progress_callback(i + 1, total)
-    
+
     if progress_callback:
         progress_callback(total, total)
-    
+
     return {'level1': level1, 'level2': level2, 'level3': level3}
 
 def get_cache_files(folder):
@@ -393,7 +408,15 @@ def group_by_phash(file_hashes, threshold=5, progress_callback=None):
                 if hasattr(h1, '__sub__') and hasattr(h2, '__sub__'):
                     try:
                         diff = abs(h1 - h2)
+                        # debug info: file sizes and hashes
+                        try:
+                            size1 = os.path.getsize(f1)
+                            size2 = os.path.getsize(f2)
+                            size_ratio = max(size1, size2) / (min(size1, size2) + 1)
+                        except Exception:
+                            size1 = size2 = size_ratio = None
                         if diff <= threshold:
+                            print(f"[DBG GROUP] MATCH: {f1} <-> {f2} diff={diff} threshold={threshold} size_ratio={size_ratio}")
                             group.append(f2)
                             used.add(f2)
                     except Exception:
@@ -401,10 +424,10 @@ def group_by_phash(file_hashes, threshold=5, progress_callback=None):
         used.add(f1)
         if len(group) > 1:
             groups.append(group)
-        
+
         if progress_callback and i % 10 == 0:
             progress_callback(i + 1, total)
-    
+
     if progress_callback:
         progress_callback(total, total)
     return groups
@@ -419,7 +442,14 @@ def find_group_for_index(args):
             if hasattr(h1, '__sub__') and hasattr(h2, '__sub__'):
                 try:
                     diff = abs(h1 - h2)
+                    try:
+                        size1 = os.path.getsize(f1)
+                        size2 = os.path.getsize(f2)
+                        size_ratio = max(size1, size2) / (min(size1, size2) + 1)
+                    except Exception:
+                        size1 = size2 = size_ratio = None
                     if diff <= threshold:
+                        print(f"[DBG GROUP] Worker MATCH: {f1} <-> {f2} diff={diff} threshold={threshold} size_ratio={size_ratio}")
                         group.append(f2)
                 except Exception:
                     continue
@@ -445,7 +475,7 @@ def group_by_phash_parallel(file_hashes, threshold=5, max_workers=None, progress
         batch_size = 1000  # 中規模: 1000ファイル
     else:
         batch_size = 2000  # 大規模: 2000ファイル
-    
+
     all_groups = []
 
     for i in range(0, len(file_hashes), batch_size):
@@ -466,7 +496,14 @@ def group_by_phash_parallel(file_hashes, threshold=5, max_workers=None, progress
         for group in group_candidates:
             group = group - used
             if len(group) > 1:
-                all_groups.append(list(group))
+                lst = list(group)
+                # debug print for resulting group
+                try:
+                    sizes = [os.path.getsize(p) for p in lst]
+                except Exception:
+                    sizes = None
+                print(f"[DBG GROUP] Batch grouped: count={len(lst)} files sample={lst[:3]} sizes={sizes}")
+                all_groups.append(lst)
                 used.update(group)
 
     return all_groups
@@ -499,7 +536,7 @@ def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None,
     video_exts = (".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".mpg", ".mpeg", ".3gp")
     files = get_image_and_video_files(folder, image_exts, video_exts)
     print(f"[PERF] 対象ファイル数: {len(files)}")
-    
+
     from component.thumbnail.thumbnail_util import FastCache
     cache = FastCache()
     cached_groups = cache.get_group_cache(folder, files, use_advanced)
@@ -522,7 +559,7 @@ def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None,
         batch_size = 1000  # 中規模: 1000ファイル
     else:
         batch_size = 2000  # 大規模: 2000ファイル
-    
+
     for batch_start in range(0, len(files), batch_size):
         batch_files = files[batch_start:batch_start + batch_size]
 
@@ -535,7 +572,7 @@ def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None,
                 if h is None:
                     print(f"[ERROR] 画像pHash失敗: {os.path.basename(f)}")
             else:
-                h = get_video_semantic_hash(f, cache)
+                h = get_video_semantic_hash(f, cache, use_advanced)
                 if h is None:
                     print(f"[ERROR] 動画pHash失敗: {os.path.basename(f)}")
 
@@ -552,11 +589,11 @@ def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None,
 
     hash_elapsed = time.time() - hash_start
     print(f"[PERF] pHash計算: {hash_elapsed:.2f}秒 ({len(files)/hash_elapsed:.1f}ファイル/秒)")
-    
+
     error_files = [f for f, h in file_hashes if h is None]
     valid_file_hashes = [(f, h) for f, h in file_hashes if h is not None]
     print(f"[PERF] 有効ファイル: {len(valid_file_hashes)}/{len(file_hashes)}")
-    
+
     if error_files:
         print(f"[ERROR] pHash計算失敗ファイル: {len(error_files)}件")
         for ef in error_files[:5]:
@@ -573,37 +610,37 @@ def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None,
     print(f"[INTEGRITY] 同一pHash: {identical_hashes}種類, 平均重複: {len(valid_file_hashes)/len(hash_counts):.1f}")
 
     group_start = time.time()
-    
+
     if use_advanced:
         print("[ADVANCED] 高精度モード: メタデータ取得中...")
         metadata_dict = {}
         video_files = [f for f, h in valid_file_hashes if os.path.splitext(f)[1].lower() in video_exts]
-        
+
         meta_start = time.time()
         for idx, vf in enumerate(video_files):
             metadata_dict[vf] = get_video_metadata(vf, cache)
-            
+
             if progress_callback is not None:
                 progress_callback(total + idx + 1, total + len(video_files))
-        
+
         print(f"[ADVANCED] メタデータ取得完了: {len(metadata_dict)}動画 ({time.time() - meta_start:.1f}秒)")
         print(f"[ADVANCED] 使用閾値: {THRESHOLD_HIGH_PRECISION} (固定値)")
-        
+
         def grouping_progress(current, total_items):
             if progress_callback:
                 progress_callback(total + len(video_files) + current, total + len(video_files) + total_items)
-        
+
         result = group_by_phash_advanced(valid_file_hashes, metadata_dict, grouping_progress)
         groups = result['level1'] + result['level2'] + result['level3']
         print(f"[ADVANCED] レベル1: {len(result['level1'])}, レベル2: {len(result['level2'])}, レベル3: {len(result['level3'])}")
     else:
         threshold = THRESHOLD_NORMAL
         print(f"[PERF] 使用閾値: {threshold} (固定値、ファイル数: {len(valid_file_hashes)})")
-        
+
         def grouping_progress(current, total_items):
             if progress_callback:
                 progress_callback(total + current, total + total_items)
-        
+
         if parallel and len(valid_file_hashes) > 50:
             groups = group_by_phash_parallel(valid_file_hashes, threshold=threshold, progress_callback=grouping_progress)
         else:
@@ -613,7 +650,7 @@ def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None,
 
     group_elapsed = time.time() - group_start
     print(f"[PERF] グループ化: {group_elapsed:.2f}秒, 重複グループ: {len(groups)}")
-    
+
     if error_files:
         print(f"[WARNING] pHash計算失敗ファイル: {len(error_files)}件 (グループ化から除外)")
         print(f"[INFO] 失敗理由: 明るさフィルタ除外、コーデック非対応、破損ファイル等")
@@ -622,7 +659,7 @@ def find_duplicates_in_folder(folder, progress_bar=None, progress_callback=None,
 
     if len(groups) > 100:
         print(f"[WARNING] グループ数が異常に多い: {len(groups)} (閾値を下げることを推奨)")
-    
+
     cache.set_group_cache(folder, files, use_advanced, groups)
     print(f"[PERF] グループをキャッシュに保存: {len(groups)}グループ")
 
@@ -640,7 +677,7 @@ def find_duplicates_streaming(folder, files, progress_callback=None, parallel=Tr
         chunk_size = 1000
     else:
         chunk_size = 2000
-    
+
     all_groups = []
     processed_hashes = {}
 

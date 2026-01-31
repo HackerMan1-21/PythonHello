@@ -1,61 +1,69 @@
-# Python
+# Python & ビルド
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
-*.pkl
-*.pickle
-*.db
-*.sqlite3
+*.so
+*.dll
+*.dylib
+build/
+dist/
+*.egg-info/
+*.spec
+wheelhouse/
+pip-wheel-metadata/
 
-# キャッシュ・一時ファイル
+# 環境・ツール
+.venv/
+env/
+.vscode/
+.idea/
+.pytest_cache/
+.mypy_cache/
 .cache/
-*.tmp
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.pyre/
+.hypothesis/
+
+# ログ・一時ファイル
 *.log
+*.tmp
 *.bak
 *.swp
 *.swo
-.realesrgan_debug.log
+*.orig
+nohup.out
+logs/
+tmp/
+temp/
+~$*
 
-# Windows
-Thumbs.db
-Desktop.ini
-*.DS_Store
+# モデル・重量級ファイル
+models/*.bin
+models/*.pth
+models/*.pt
+models/*.ckpt
+models/*.onnx
+models/*.npz
+models/*.weights
+models/*.model
 
-# 仮想環境（プロジェクト固有）
+# 実験・成果物
+experiments/
+results/
+runs/
+artifacts/
+wandb/
+output/
+outputs/
+cache/
+cache/**
 movieEditor/
 
-# ビルド/配布物
-build/
-dist/
-*.spec
-*.egg-info/
-
-# バイナリ・モデル・外部ツール
-*.exe
-*.dll
-*.bin
-*.param
-*.lib
-*.so
-*.whl
-*.pyd
-
-# IDE・エディタ
-.vscode/
-.idea/
-
-# Jupyter
-.ipynb_checkpoints/
-
-# テスト関連
-/tests/__pycache__/
-htmlcov/
-.coverage
-*.cover
-
-# その他
-start_app.bat*
-cache/
-BasicSR/
-models/
+# OS
+.DS_Store
+Thumbs.db
