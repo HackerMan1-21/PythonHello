@@ -34,18 +34,15 @@ POINTING_CURSOR = getattr(Qt, "PointingHandCursor", getattr(getattr(Qt, "CursorS
 PREVIEW_INTERVAL_MS = 350
 VIDEO_EXTS = ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg')
 BUTTON_BASE_STYLE = (
-    "QPushButton {\n"
-    "    font-size: 15px;\n"
-    "    font-weight: bold;\n"
-    "    color: {fg};\n"
-    "    background-color: {bg};\n"
-    "    border: 1px solid {border};\n"
-    "    border-radius: 6px;\n"
-    "    padding: 8px 18px;\n"
-    "}\n"
-    "QPushButton:hover {\n"
-    "    background-color: {hover};\n"
-    "}\n"
+    # 親の包括QSSと競合しにくいよう、セレクタ無し（プロパティ直指定）で定義
+    "font-size: 14px;"
+    "font-weight: bold;"
+    "color: {fg};"
+    "background-color: {bg};"
+    "border: 2px solid {border};"
+    "border-radius: 12px;"
+    "padding: 1px;"
+    "min-height: 49px;"
 )
 
 
@@ -55,9 +52,10 @@ def build_button_style(fg: str, bg: str, border: str, hover: str) -> str:
 
 HEADER_BUTTON_STYLE = build_button_style(
     fg="#00ffe7",
-    bg="rgba(0, 255, 231, 0.12)",
-    border="rgba(0, 255, 231, 0.6)",
-    hover="rgba(0, 255, 231, 0.24)",
+    # Qtのrgbaはalphaが0-255前提なので整数で指定
+    bg="rgba(0,255,231,30)",
+    border="rgba(0,255,231,170)",
+    hover="rgba(0,255,231,60)",
 )
 
 OPEN_BUTTON_STYLE = build_button_style(
@@ -290,7 +288,7 @@ def create_prime_group_ui(
     header_hbox.addWidget(header_label)
 
     dismiss_btn = QPushButton("非表示")
-    dismiss_btn.setFixedHeight(38)
+    dismiss_btn.setMinimumHeight(53)
     dismiss_btn.setMinimumWidth(132)
     dismiss_btn.setStyleSheet(HEADER_BUTTON_STYLE)
 
@@ -483,7 +481,7 @@ def create_prime_group_ui(
             return open_folder
 
         open_btn = QPushButton("フォルダ")
-        open_btn.setFixedHeight(38)
+        open_btn.setMinimumHeight(53)
         open_btn.setFixedWidth(150)
         open_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         open_btn.setStyleSheet(OPEN_BUTTON_STYLE)
@@ -513,7 +511,7 @@ def create_prime_group_ui(
             return delete_file
 
         del_btn = QPushButton("削除")
-        del_btn.setFixedHeight(38)
+        del_btn.setMinimumHeight(53)
         del_btn.setFixedWidth(132)
         del_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         del_btn.setStyleSheet(DELETE_BUTTON_STYLE)

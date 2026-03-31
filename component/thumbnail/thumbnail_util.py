@@ -27,17 +27,29 @@ class FastCache:
         self.phash_db_path = os.path.join(cache_dir, "phash.db")
         self._init_phash_db()
 
+    def _connect_db(self, path: str):
+        # allow concurrent threads with timeout and WAL enabled
+        return sqlite3.connect(path, timeout=5, check_same_thread=False)
+
     def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
+        # use WAL and a reasonable timeout/check_same_thread for concurrent access
+        conn = sqlite3.connect(self.db_path, timeout=5, check_same_thread=False)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""CREATE TABLE IF NOT EXISTS thumbs (
                 path_hash TEXT PRIMARY KEY,
                 path TEXT,
                 mtime REAL,
                 data BLOB
             )""")
+            conn.commit()
+        finally:
+            conn.close()
 
     def _init_phash_db(self):
-        with sqlite3.connect(self.phash_db_path) as conn:
+        conn = sqlite3.connect(self.phash_db_path, timeout=5, check_same_thread=False)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""CREATE TABLE IF NOT EXISTS hash_cache (
                 file_path TEXT PRIMARY KEY,
                 file_size INTEGER,
@@ -64,6 +76,9 @@ class FastCache:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_phash ON hash_cache(phash)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_file_path ON hash_cache(file_path)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_metadata_path ON metadata_cache(file_path)")
+            conn.commit()
+        finally:
+            conn.close()
 
     def _get_hash(self, path):
         return hashlib.md5(path.encode()).hexdigest()
@@ -76,11 +91,14 @@ class FastCache:
             mtime = os.path.getmtime(path)
             path_hash = self._get_hash(path)
 
-            with sqlite3.connect(self.db_path) as conn:
+            conn = self._connect_db(self.db_path)
+            try:
                 row = conn.execute(
                     "SELECT data FROM thumbs WHERE path_hash=? AND mtime=?",
                     (path_hash, mtime)
                 ).fetchone()
+            finally:
+                conn.close()
 
                 if row:
                     import pickle
@@ -100,11 +118,15 @@ class FastCache:
             import pickle
             data = pickle.dumps(thumb)
 
-            with sqlite3.connect(self.db_path) as conn:
+            conn = self._connect_db(self.db_path)
+            try:
                 conn.execute(
                     "INSERT OR REPLACE INTO thumbs (path_hash, path, mtime, data) VALUES (?, ?, ?, ?)",
                     (path_hash, path, mtime, data)
                 )
+                conn.commit()
+            finally:
+                conn.close()
 
             if len(self.memory_cache) < self.max_memory:
                 self.memory_cache[path] = thumb
@@ -117,11 +139,14 @@ class FastCache:
             file_size = stat.st_size
             mtime = stat.st_mtime
 
-            with sqlite3.connect(self.phash_db_path) as conn:
+            conn = self._connect_db(self.phash_db_path)
+            try:
                 row = conn.execute(
                     "SELECT phash FROM hash_cache WHERE file_path=? AND file_size=? AND modified_time=?",
                     (file_path, file_size, mtime)
                 ).fetchone()
+            finally:
+                conn.close()
 
                 if row:
                     print(f"[pHash cache HIT] {file_path}")
@@ -137,11 +162,15 @@ class FastCache:
             file_size = stat.st_size
             mtime = stat.st_mtime
 
-            with sqlite3.connect(self.phash_db_path) as conn:
+            conn = self._connect_db(self.phash_db_path)
+            try:
                 conn.execute(
                     "INSERT OR REPLACE INTO hash_cache (file_path, file_size, modified_time, phash) VALUES (?, ?, ?, ?)",
                     (file_path, file_size, mtime, phash_str)
                 )
+                conn.commit()
+            finally:
+                conn.close()
         except:
             pass
 
@@ -151,11 +180,14 @@ class FastCache:
             file_size = stat.st_size
             mtime = stat.st_mtime
 
-            with sqlite3.connect(self.phash_db_path) as conn:
+            conn = self._connect_db(self.phash_db_path)
+            try:
                 row = conn.execute(
                     "SELECT width, height, duration FROM metadata_cache WHERE file_path=? AND file_size=? AND modified_time=?",
                     (file_path, file_size, mtime)
                 ).fetchone()
+            finally:
+                conn.close()
 
                 if row:
                     return {'size': file_size, 'width': row[0], 'height': row[1], 'duration': row[2]}
@@ -169,26 +201,33 @@ class FastCache:
             file_size = stat.st_size
             mtime = stat.st_mtime
 
-            with sqlite3.connect(self.phash_db_path) as conn:
+            conn = self._connect_db(self.phash_db_path)
+            try:
                 conn.execute(
                     "INSERT OR REPLACE INTO metadata_cache (file_path, file_size, modified_time, width, height, duration) VALUES (?, ?, ?, ?, ?, ?)",
                     (file_path, file_size, mtime, metadata['width'], metadata['height'], metadata['duration'])
                 )
+                conn.commit()
+            finally:
+                conn.close()
         except:
             pass
 
-    def get_group_cache(self, folder, file_list, use_advanced):
+    def get_group_cache(self, folder, file_list, use_advanced, settings_key: str = ""):
         import hashlib
         import json
         folder_hash = hashlib.md5(folder.encode()).hexdigest()
-        file_list_hash = hashlib.md5(''.join(sorted(file_list)).encode()).hexdigest()
+        file_list_hash = hashlib.md5((''.join(sorted(file_list)) + "|" + (settings_key or "")).encode()).hexdigest()
 
         try:
-            with sqlite3.connect(self.phash_db_path) as conn:
+            conn = self._connect_db(self.phash_db_path)
+            try:
                 row = conn.execute(
                     "SELECT groups_json FROM group_cache WHERE folder_hash=? AND file_list_hash=? AND use_advanced=?",
                     (folder_hash, file_list_hash, int(use_advanced))
                 ).fetchone()
+            finally:
+                conn.close()
 
                 if row:
                     print(f"[GROUP CACHE HIT] {folder}")
@@ -198,18 +237,22 @@ class FastCache:
         print(f"[GROUP CACHE MISS] {folder}")
         return None
 
-    def set_group_cache(self, folder, file_list, use_advanced, groups):
+    def set_group_cache(self, folder, file_list, use_advanced, groups, settings_key: str = ""):
         import hashlib
         import json
         folder_hash = hashlib.md5(folder.encode()).hexdigest()
-        file_list_hash = hashlib.md5(''.join(sorted(file_list)).encode()).hexdigest()
+        file_list_hash = hashlib.md5((''.join(sorted(file_list)) + "|" + (settings_key or "")).encode()).hexdigest()
 
         try:
-            with sqlite3.connect(self.phash_db_path) as conn:
+            conn = self._connect_db(self.phash_db_path)
+            try:
                 conn.execute(
                     "INSERT OR REPLACE INTO group_cache (folder_hash, file_list_hash, use_advanced, groups_json) VALUES (?, ?, ?, ?)",
                     (folder_hash, file_list_hash, int(use_advanced), json.dumps(groups))
                 )
+                conn.commit()
+            finally:
+                conn.close()
         except:
             pass
 
@@ -261,7 +304,9 @@ class FastCache:
 def pil_image_to_qpixmap(img):
     app = QCoreApplication.instance()
     if app is not None and QThread.currentThread() != app.thread():
-        raise RuntimeError("pil_image_to_qpixmapは必ずGUIスレッドで呼んでください")
+        # avoid raising in non-GUI threads; callers should fall back to placeholder
+        print("[THUMB NONGUI] pil_image_to_qpixmap called outside GUI thread")
+        return None
     if img is None:
         return None
     if img.mode != "RGB":

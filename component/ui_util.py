@@ -17,10 +17,9 @@ UI部品生成・グループUI構築・比較再生・詳細ダイアログな�
 from PyQt5.QtWidgets import QLabel, QVBoxLayout, QWidget, QDialog, QHBoxLayout, QFileDialog, QMessageBox
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import Qt
-from PIL.ImageQt import ImageQt
 import os
 import shutil
-from component.thumbnail.thumbnail_util import get_thumbnail_for_file
+from component.thumbnail.thumbnail_util import get_thumbnail_for_file, pil_image_to_qpixmap
 from component.utils.file_util import move_to_trash
 
 def show_detail_dialog(parent, file_path):
@@ -69,8 +68,8 @@ def add_thumbnail_widget(parent, content_layout, file_path, toggle_select, selec
         thumb = None
     thumb_label = QLabel()
     if thumb:
-        qimage = ImageQt(thumb)
-        thumb_label.setPixmap(QPixmap.fromImage(qimage).scaled(120, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        pixmap = pil_image_to_qpixmap(thumb)
+        thumb_label.setPixmap(pixmap.scaled(120, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation))
     else:
         thumb_label.setText("No Thumbnail")
     thumb_label.setFixedSize(120, 90)

@@ -246,36 +246,36 @@ class DuplicateFinderGUI(QWidget):
             self.folder_label.setText(f"選択フォルダ: {folder}")
             self.load_thumb_cache(folder)
             self._show_action_dialog()
-    
+
     def _show_action_dialog(self):
         """重複検査か顔グループ化を選択"""
         dialog = QDialog(self)
         dialog.setWindowTitle("処理選択")
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel("実行する処理を選択してください:"))
-        
+
         def on_dup():
             dialog.accept()
             self.find_duplicates()
-        
+
         def on_face():
             dialog.accept()
             self.face_grouping_and_move()
-        
+
         dup_btn = QPushButton("重複検査")
         dup_btn.clicked.connect(on_dup)
         layout.addWidget(dup_btn)
-        
+
         face_btn = QPushButton("顔グループ化")
         face_btn.clicked.connect(on_face)
         layout.addWidget(face_btn)
-        
+
         cancel_btn = QPushButton("キャンセル")
         cancel_btn.clicked.connect(dialog.reject)
         layout.addWidget(cancel_btn)
-        
+
         dialog.exec_()
-    
+
     def load_thumb_cache(self, folder=None):
         self.thumb_cache = load_thumb_cache(folder)
 
@@ -365,14 +365,25 @@ class DuplicateFinderGUI(QWidget):
         if not folder:
             QMessageBox.warning(self, "警告", "フォルダを選択してください")
             return
-        
+
         # モード選択ダイアログ
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QRadioButton, QDialogButtonBox, QLabel, QGroupBox
-        
+        from PyQt5.QtWidgets import (
+            QCheckBox,
+            QDialog,
+            QDialogButtonBox,
+            QDoubleSpinBox,
+            QFormLayout,
+            QGroupBox,
+            QLabel,
+            QRadioButton,
+            QSpinBox,
+            QVBoxLayout,
+        )
+
         dialog = QDialog(self)
         dialog.setWindowTitle("重複検出設定")
         layout = QVBoxLayout(dialog)
-        
+
         # 検出精度選択
         mode_group = QGroupBox("検出精度")
         mode_layout = QVBoxLayout()
@@ -383,7 +394,7 @@ class DuplicateFinderGUI(QWidget):
         mode_layout.addWidget(advanced_mode)
         mode_group.setLayout(mode_layout)
         layout.addWidget(mode_group)
-        
+
         # ファイル種類選択
         type_group = QGroupBox("ファイル種類")
         type_layout = QVBoxLayout()
@@ -396,46 +407,177 @@ class DuplicateFinderGUI(QWidget):
         type_layout.addWidget(image_only)
         type_group.setLayout(type_layout)
         layout.addWidget(type_group)
-        
+
+        # 動画: 部分一致（切り抜き/画質違い/拡張子違い）
+        video_partial_group = QGroupBox("動画: 切り抜き/画質違い対応")
+        vp_form = QFormLayout()
+
+        enable_video_partial_match = QCheckBox("部分一致で判定（切り抜きも重複扱い）")
+        enable_video_partial_match.setChecked(True)
+        vp_form.addRow(enable_video_partial_match)
+
+        vp_interval = QDoubleSpinBox()
+        vp_interval.setRange(0.2, 5.0)
+        vp_interval.setSingleStep(0.1)
+        vp_interval.setValue(0.6)
+        vp_interval.setSuffix(" sec")
+        vp_form.addRow("サンプル間隔", vp_interval)
+
+        vp_max_samples = QSpinBox()
+        vp_max_samples.setRange(10, 300)
+        vp_max_samples.setSingleStep(10)
+        vp_max_samples.setValue(200)
+        vp_form.addRow("最大サンプル数", vp_max_samples)
+
+        vp_hash_dist = QSpinBox()
+        vp_hash_dist.setRange(0, 30)
+        vp_hash_dist.setValue(6)
+        vp_form.addRow("ハッシュ距離(許容)", vp_hash_dist)
+
+        vp_overlap = QDoubleSpinBox()
+        vp_overlap.setRange(0.05, 0.95)
+        vp_overlap.setSingleStep(0.05)
+        vp_overlap.setValue(0.5)
+        vp_form.addRow("重なり率(短い側)", vp_overlap)
+
+        vp_min_matches = QSpinBox()
+        vp_min_matches.setRange(1, 40)
+        vp_min_matches.setValue(12)
+        vp_form.addRow("最小一致フレーム数", vp_min_matches)
+
+        vp_candidate_min_shared = QSpinBox()
+        vp_candidate_min_shared.setRange(1, 15)
+        vp_candidate_min_shared.setValue(4)
+        vp_form.addRow("候補の最低共有数", vp_candidate_min_shared)
+
+        # 暗転シーン回避（実写向け）
+        vp_avoid_dark = QCheckBox("暗転/低コントラストを自動で避ける")
+        vp_avoid_dark.setChecked(True)
+        vp_form.addRow(vp_avoid_dark)
+
+        vp_dark_trim = QDoubleSpinBox()
+        vp_dark_trim.setRange(0.0, 0.8)
+        vp_dark_trim.setSingleStep(0.05)
+        vp_dark_trim.setValue(0.25)
+        vp_form.addRow("暗いフレーム下位カット率", vp_dark_trim)
+
+        vp_min_std = QDoubleSpinBox()
+        vp_min_std.setRange(0.0, 30.0)
+        vp_min_std.setSingleStep(1.0)
+        vp_min_std.setValue(8.0)
+        vp_form.addRow("最低コントラスト(Std)", vp_min_std)
+
+        video_partial_group.setLayout(vp_form)
+        layout.addWidget(video_partial_group)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
-        
+
         if dialog.exec_() != QDialog.Accepted:
             return
-        
+
         use_advanced = advanced_mode.isChecked()
         self.last_use_advanced = use_advanced
-        
+
         file_type = 'both'
         if video_only.isChecked():
             file_type = 'video'
         elif image_only.isChecked():
             file_type = 'image'
-        
-        self._execute_duplicate_finding(folder, use_advanced, file_type)
-        
-    def _execute_duplicate_finding(self, folder, use_advanced=False, file_type='both'):
+
+        self._execute_duplicate_finding(
+            folder,
+            use_advanced,
+            file_type,
+            enable_video_partial_match=enable_video_partial_match.isChecked(),
+            video_partial_sample_interval_sec=float(vp_interval.value()),
+            video_partial_max_samples=int(vp_max_samples.value()),
+            video_partial_hash_distance_max=int(vp_hash_dist.value()),
+            video_partial_overlap_ratio_min=float(vp_overlap.value()),
+            video_partial_min_matches=int(vp_min_matches.value()),
+            video_partial_candidate_min_shared=int(vp_candidate_min_shared.value()),
+            video_partial_avoid_dark_scenes=vp_avoid_dark.isChecked(),
+            video_partial_dark_trim_ratio=float(vp_dark_trim.value()),
+            video_partial_min_contrast_std=float(vp_min_std.value()),
+        )
+
+    def _execute_duplicate_finding(
+        self,
+        folder,
+        use_advanced=False,
+        file_type='both',
+        *,
+        enable_video_partial_match: bool = True,
+        video_partial_sample_interval_sec: float = 0.7,
+        video_partial_max_samples: int = 200,
+        video_partial_hash_distance_max: int = 10,
+        video_partial_overlap_ratio_min: float = 0.20,
+        video_partial_min_matches: int = 4,
+        video_partial_candidate_min_shared: int = 3,
+        video_partial_avoid_dark_scenes: bool = True,
+        video_partial_dark_trim_ratio: float = 0.25,
+        video_partial_min_contrast_std: float = 8.0,
+    ):
         """重複検出の実際の実行処理"""
         from PyQt5.QtCore import QThread, pyqtSignal
         import time
-        
+
         class DuplicateWorker(QThread):
             progress = pyqtSignal(int, int)
             finished = pyqtSignal(list)
             error = pyqtSignal(str)
-            
-            def __init__(self, folder_path, use_advanced):
+
+            def __init__(
+                self,
+                folder_path,
+                use_advanced,
+                *,
+                enable_video_partial_match: bool,
+                video_partial_sample_interval_sec: float,
+                video_partial_max_samples: int,
+                video_partial_hash_distance_max: int,
+                video_partial_overlap_ratio_min: float,
+                video_partial_min_matches: int,
+                video_partial_candidate_min_shared: int,
+                video_partial_avoid_dark_scenes: bool,
+                video_partial_dark_trim_ratio: float,
+                video_partial_min_contrast_std: float,
+            ):
                 super().__init__()
                 self.folder_path = folder_path
                 self.use_advanced = use_advanced
-            
+                self.enable_video_partial_match = enable_video_partial_match
+                self.video_partial_sample_interval_sec = video_partial_sample_interval_sec
+                self.video_partial_max_samples = video_partial_max_samples
+                self.video_partial_hash_distance_max = video_partial_hash_distance_max
+                self.video_partial_overlap_ratio_min = video_partial_overlap_ratio_min
+                self.video_partial_min_matches = video_partial_min_matches
+                self.video_partial_candidate_min_shared = video_partial_candidate_min_shared
+                self.video_partial_avoid_dark_scenes = video_partial_avoid_dark_scenes
+                self.video_partial_dark_trim_ratio = video_partial_dark_trim_ratio
+                self.video_partial_min_contrast_std = video_partial_min_contrast_std
+
             def run(self):
                 try:
                     from component.duplicate_finder import find_duplicates_in_folder
                     print(f"[DEBUG] Worker starting: use_advanced={self.use_advanced}")
-                    groups, _ = find_duplicates_in_folder(self.folder_path, progress_callback=self.progress.emit, use_advanced=self.use_advanced)
+                    groups, _ = find_duplicates_in_folder(
+                        self.folder_path,
+                        progress_callback=self.progress.emit,
+                        use_advanced=self.use_advanced,
+                        enable_video_partial_match=self.enable_video_partial_match,
+                        video_partial_sample_interval_sec=self.video_partial_sample_interval_sec,
+                        video_partial_max_samples=self.video_partial_max_samples,
+                        video_partial_hash_distance_max=self.video_partial_hash_distance_max,
+                        video_partial_overlap_ratio_min=self.video_partial_overlap_ratio_min,
+                        video_partial_min_matches=self.video_partial_min_matches,
+                        video_partial_candidate_min_shared=self.video_partial_candidate_min_shared,
+                        video_partial_avoid_dark_scenes=self.video_partial_avoid_dark_scenes,
+                        video_partial_dark_trim_ratio=self.video_partial_dark_trim_ratio,
+                        video_partial_min_contrast_std=self.video_partial_min_contrast_std,
+                    )
                     print(f"[DEBUG] Worker finished: {len(groups)} groups")
                     self.finished.emit(groups)
                 except Exception as e:
@@ -443,50 +585,63 @@ class DuplicateFinderGUI(QWidget):
                     import traceback
                     traceback.print_exc()
                     self.error.emit(str(e))
-        
+
         progress_dialog = QDialog(self)
         progress_dialog.setWindowTitle("重複検出中")
         progress_dialog.setMinimumSize(500, 200)
         layout = QVBoxLayout(progress_dialog)
-        
+
         status_label = QLabel("処理中...")
         status_label.setStyleSheet("font-size:16px;font-weight:bold;")
         layout.addWidget(status_label)
-        
+
         progress_bar = QProgressBar()
         progress_bar.setRange(0, 100)
         layout.addWidget(progress_bar)
-        
+
         elapsed_label = QLabel("経過時間: 0秒")
         layout.addWidget(elapsed_label)
-        
+
         eta_label = QLabel("予測終了時間: 計算中...")
         layout.addWidget(eta_label)
-        
+
         remain_label = QLabel("残り: 計算中...")
         layout.addWidget(remain_label)
-        
+
         start_time = time.time()
-        
+
         def update_progress(current, total):
             progress_bar.setValue(int(current/total*100))
             elapsed = time.time() - start_time
             elapsed_label.setText(f"経過時間: {int(elapsed)}秒")
-            
+
             if current > 0:
                 eta = (elapsed / current) * (total - current)
                 eta_label.setText(f"予測終了時間: {int(eta)}秒")
                 remain_label.setText(f"残り: {total - current}件")
-        
+
         progress_dialog.show()
-        
-        self.worker = DuplicateWorker(folder, use_advanced)
+
+        self.worker = DuplicateWorker(
+            folder,
+            use_advanced,
+            enable_video_partial_match=enable_video_partial_match,
+            video_partial_sample_interval_sec=video_partial_sample_interval_sec,
+            video_partial_max_samples=video_partial_max_samples,
+            video_partial_hash_distance_max=video_partial_hash_distance_max,
+            video_partial_overlap_ratio_min=video_partial_overlap_ratio_min,
+            video_partial_min_matches=video_partial_min_matches,
+            video_partial_candidate_min_shared=video_partial_candidate_min_shared,
+            video_partial_avoid_dark_scenes=video_partial_avoid_dark_scenes,
+            video_partial_dark_trim_ratio=video_partial_dark_trim_ratio,
+            video_partial_min_contrast_std=video_partial_min_contrast_std,
+        )
         self.worker.progress.connect(update_progress)
         self.worker.finished.connect(lambda groups: self._on_duplicates_found(groups, file_type))
-        
+
         def on_error(err):
             QMessageBox.critical(self, "エラー", f"重複検出エラー: {err}")
-        
+
         self.worker.error.connect(on_error)  # type: ignore[arg-type]
         self.worker.finished.connect(lambda: progress_dialog.close())  # type: ignore[arg-type]
         self.worker.error.connect(lambda: progress_dialog.close())  # type: ignore[arg-type]
@@ -494,16 +649,16 @@ class DuplicateFinderGUI(QWidget):
         self.worker.error.connect(lambda: self.cancel_btn.setEnabled(False))  # type: ignore[arg-type]
         self.cancel_btn.setEnabled(True)
         self.worker.start()
-    
+
     def _on_duplicates_found(self, groups, file_type='both'):
         """重複検出完了時の処理"""
         video_exts = (".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".mpg", ".mpeg", ".3gp")
         image_exts = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff")
-        
+
         video_groups = []
         image_groups = []
         error_groups = []
-        
+
         for group in groups:
             if not group:
                 continue
@@ -514,48 +669,48 @@ class DuplicateFinderGUI(QWidget):
                 image_groups.append(group)
             else:
                 error_groups.append(group)
-        
+
         if file_type == 'video':
             self.duplicate_groups = video_groups
         elif file_type == 'image':
             self.duplicate_groups = image_groups
         else:
             self.duplicate_groups = video_groups + image_groups + error_groups
-        
+
         # ファイルリストを保存
         self.last_file_list = set()
         for group in self.duplicate_groups:
             self.last_file_list.update(group)
-        
+
         self.current_page = 0
         self.show_current_page()
-    
+
     def _execute_incremental_finding(self, folder, new_files):
         """差分検出：新規ファイルのみ処理"""
         from PyQt5.QtCore import QThread, pyqtSignal
         import time
-        
+
         class IncrementalWorker(QThread):
             progress = pyqtSignal(int, int)
             finished = pyqtSignal(list)
             error = pyqtSignal(str)
-            
+
             def __init__(self, folder_path, new_files, existing_groups, use_advanced):
                 super().__init__()
                 self.folder_path = folder_path
                 self.new_files = new_files
                 self.existing_groups = existing_groups
                 self.use_advanced = use_advanced
-            
+
             def run(self):
                 try:
                     from component.duplicate_finder import get_image_phash, get_video_semantic_hash
                     from component.thumbnail.thumbnail_util import FastCache
                     import imagehash
-                    
+
                     cache = FastCache()
                     new_hashes = []
-                    
+
                     # 新規ファイルのハッシュ計算
                     for idx, f in enumerate(self.new_files):
                         ext = os.path.splitext(f)[1].lower()
@@ -565,15 +720,15 @@ class DuplicateFinderGUI(QWidget):
                             h = get_video_semantic_hash(f, cache)
                         new_hashes.append((f, h))
                         self.progress.emit(idx+1, len(self.new_files))
-                    
+
                     # 既存グループとマッチング
                     merged_groups = list(self.existing_groups)
                     unmatched = []
-                    
+
                     for new_file, new_hash in new_hashes:
                         if new_hash is None:
                             continue
-                        
+
                         matched = False
                         for group in merged_groups:
                             if not group:
@@ -590,10 +745,10 @@ class DuplicateFinderGUI(QWidget):
                                         break
                                 except:
                                     pass
-                        
+
                         if not matched:
                             unmatched.append((new_file, new_hash))
-                    
+
                     # 未マッチファイル同士でグループ化
                     for i, (f1, h1) in enumerate(unmatched):
                         if h1 is None:
@@ -608,45 +763,45 @@ class DuplicateFinderGUI(QWidget):
                                     pass
                         if len(new_group) > 1:
                             merged_groups.append(new_group)
-                    
+
                     self.finished.emit(merged_groups)
                 except Exception as e:
                     import traceback
                     traceback.print_exc()
                     self.error.emit(str(e))
-        
+
         progress_dialog = QDialog(self)
         progress_dialog.setWindowTitle("差分検出中")
         progress_dialog.setMinimumSize(500, 200)
         layout = QVBoxLayout(progress_dialog)
-        
+
         status_label = QLabel(f"新規ファイル {len(new_files)}件を処理中...")
         status_label.setStyleSheet("font-size:16px;font-weight:bold;")
         layout.addWidget(status_label)
-        
+
         progress_bar = QProgressBar()
         progress_bar.setRange(0, 100)
         layout.addWidget(progress_bar)
-        
+
         elapsed_label = QLabel("経過時間: 0秒")
         layout.addWidget(elapsed_label)
-        
+
         start_time = time.time()
-        
+
         def update_progress(current, total):
             progress_bar.setValue(int(current/total*100))
             elapsed = time.time() - start_time
             elapsed_label.setText(f"経過時間: {int(elapsed)}秒")
-        
+
         progress_dialog.show()
-        
+
         self.worker = IncrementalWorker(folder, new_files, self.duplicate_groups, self.last_use_advanced)
         self.worker.progress.connect(update_progress)
         self.worker.finished.connect(self._on_duplicates_found)
-        
+
         def on_inc_error(err):
             QMessageBox.critical(self, "エラー", f"差分検出エラー: {err}")
-        
+
         self.worker.error.connect(on_inc_error)  # type: ignore[arg-type]
         self.worker.finished.connect(lambda: progress_dialog.close())  # type: ignore[arg-type]
         self.worker.error.connect(lambda: progress_dialog.close())  # type: ignore[arg-type]
@@ -665,16 +820,16 @@ class DuplicateFinderGUI(QWidget):
         # デバッグ情報
         print(f"[DEBUG] 総グループ数: {len(self.duplicate_groups)}")
         print(f"[DEBUG] 現在ページ: {self.current_page}, 1ページあたり: {self.groups_per_page}")
-        
+
         # ページ切り替え時にキューをクリア
         from component.thumbnail.thumbnail_util import clear_queue
         clear_queue(self.thumb_queue)
         self.clear_content()
-        
+
         start = self.current_page * self.groups_per_page
         end = start + self.groups_per_page
         page_groups = self.duplicate_groups[start:end]
-        
+
         print(f"[DEBUG] 表示範囲: {start}-{end}, 実際のグループ数: {len(page_groups)}")
         if not page_groups:
             self.content_layout.addWidget(QLabel("重複ファイルは見つかりませんでした"))
@@ -743,7 +898,7 @@ class DuplicateFinderGUI(QWidget):
         if self.thumb_manager is None:
             from component.thumbnail.thumbnail_util import VirtualThumbnailManager
             self.thumb_manager = VirtualThumbnailManager(self)
-        
+
         # サムネイル生成進捗ポップアップ
         if len(all_paths) > 10:
             import time
@@ -751,39 +906,39 @@ class DuplicateFinderGUI(QWidget):
             thumb_dialog.setWindowTitle("サムネイル生成中")
             thumb_dialog.setMinimumSize(500, 150)
             thumb_layout = QVBoxLayout(thumb_dialog)
-            
+
             thumb_status = QLabel(f"{len(all_paths)}件のサムネイルを生成中...")
             thumb_status.setStyleSheet("font-size:16px;font-weight:bold;")
             thumb_layout.addWidget(thumb_status)
-            
+
             thumb_progress = QProgressBar()
             thumb_progress.setRange(0, 100)
             thumb_layout.addWidget(thumb_progress)
-            
+
             thumb_elapsed = QLabel("経過時間: 0秒")
             thumb_layout.addWidget(thumb_elapsed)
-            
+
             thumb_eta = QLabel("予測終了時間: 計算中...")
             thumb_layout.addWidget(thumb_eta)
-            
+
             thumb_remain = QLabel("残り: 計算中...")
             thumb_layout.addWidget(thumb_remain)
-            
+
             thumb_start = time.time()
-            
+
             def update_thumb_progress(current, total):
                 thumb_progress.setValue(int(current/total*100))
                 elapsed = time.time() - thumb_start
                 thumb_elapsed.setText(f"経過時間: {int(elapsed)}秒")
-                
+
                 if current > 0:
                     eta = (elapsed / current) * (total - current)
                     thumb_eta.setText(f"予測終了時間: {int(eta)}秒")
                     thumb_remain.setText(f"残り: {total - current}件")
-                
+
                 if current >= total:
                     QTimer.singleShot(500, lambda: thumb_dialog.close())  # type: ignore[arg-type]
-            
+
             thumb_dialog.show()
             self.thumb_manager.load_visible_batch(all_paths, update_thumb_progress)
         else:
@@ -834,18 +989,18 @@ class DuplicateFinderGUI(QWidget):
         if not folder:
             QMessageBox.warning(self, "警告", "フォルダを選択してください")
             return
-        
+
         # 現在のファイルリストを取得
         current_files = set(get_image_and_video_files(folder))
-        
+
         # 差分計算
         added_files = current_files - self.last_file_list
         deleted_files = self.last_file_list - current_files
-        
+
         if not added_files and not deleted_files:
             QMessageBox.information(self, "情報", "変更はありません")
             return
-        
+
         # 削除されたファイルをグループから除外
         if deleted_files:
             for group in self.duplicate_groups:
@@ -853,15 +1008,15 @@ class DuplicateFinderGUI(QWidget):
                     if f in group:
                         group.remove(f)
             self.duplicate_groups = [g for g in self.duplicate_groups if len(g) > 1]
-        
+
         # ファイルリストを更新
         self.last_file_list = current_files
-        
+
         # 追加ファイルがあれば追加処理
         if added_files:
             self._execute_incremental_finding(folder, list(added_files))
             return
-        
+
         # UI更新
         self.show_current_page()
         QMessageBox.information(self, "完了", f"削除: {len(deleted_files)}件")
@@ -876,14 +1031,14 @@ class DuplicateFinderGUI(QWidget):
                 QMessageBox.information(self, "完了", "サムネイルキャッシュを削除しました。")
             except Exception as e:
                 QMessageBox.critical(self, "エラー", f"キャッシュ削除エラー: {e}")
-    
+
     def face_grouping_and_move(self):
         """顔グループ化処理"""
         folder = self._get_selected_folder()
         if not folder:
             QMessageBox.warning(self, "警告", "フォルダを選択してください")
             return
-        
+
         try:
             from component.face_grouping import group_by_face_and_move
             out_dir = os.path.join(folder, "face_groups")
@@ -891,7 +1046,7 @@ class DuplicateFinderGUI(QWidget):
             QMessageBox.information(self, "完了", "顔グループ化が完了しました")
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"顔グループ化エラー: {e}")
-    
+
     def show_mp4_tool_dialog(self):
         """MP4修復ツール表示"""
         try:
@@ -903,7 +1058,7 @@ class DuplicateFinderGUI(QWidget):
     def dismiss_group(self, group):
         if group in self.duplicate_groups:
             self.duplicate_groups.remove(group)
-    
+
     def delete_single_file(self, file_path):
         try:
             move_to_trash(file_path)
