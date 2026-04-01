@@ -43,6 +43,12 @@ try:
 except Exception:
     _dtw = None  # type: ignore[assignment]
     _DTW_AVAILABLE = False
+try:
+    from component.utils import audio_fingerprint as _afp
+    _AUDIO_AVAILABLE = _afp.is_audio_available()
+except Exception:
+    _afp = None  # type: ignore[assignment]
+    _AUDIO_AVAILABLE = False
 
 # 動画の「切り抜き」等に対応する部分一致設定（デフォルト）
 VIDEO_PARTIAL_MATCH_DEFAULT = True
@@ -70,27 +76,30 @@ META_CANDIDATE_MULTIPLIER = 3
 MAX_TOTAL_CANDIDATE_PAIRS = 1_200_000
 
 # ---------------------------------------------------------------------------
-# Multi-metric scoring weights (CLIP + DTW + pHash + Meta)
+# Multi-metric scoring weights (CLIP + Audio + DTW + pHash + Meta)
+# 120分動画 vs 1分切り抜き対応: 音声を追加, CLIP/Window の重みを再配分
 # ---------------------------------------------------------------------------
-W_CLIP = 0.40           # CLIP semantic cosine similarity
-W_WINDOW = 0.30         # Window-DTW partial match score
-W_PHASH = 0.15          # pHash hamming similarity
-W_META = 0.15           # Metadata (duration / resolution ratio) similarity
-FINAL_MULTI_SCORE_THRESHOLD = 0.55   # threshold to call a CLIP-only candidate a duplicate
+W_CLIP = 0.30           # CLIP semantic cosine similarity  (0.40 -> 0.30)
+W_AUDIO = 0.25          # Audio fingerprint subsequence similarity (NEW)
+W_WINDOW = 0.20         # Window-DTW partial match score   (0.30 -> 0.20)
+W_PHASH = 0.10          # pHash hamming similarity          (0.15 -> 0.10)
+W_META = 0.15           # Metadata similarity
+FINAL_MULTI_SCORE_THRESHOLD = 0.52   # 5-metric threshold (softened for audio bonus)
 CLIP_CANDIDATES_PER_FILE = 80        # top-K from HNSW per video
 
+# 音声ハード受容閾値: compare_audio がこれ以上なら 4-metric に頼らず直接 union
+AUDIO_HARD_ACCEPT = 0.70
+
 # priority_score = faiss_distance + META_PENALTY_WEIGHT * meta_penalty
-# - faiss_distance: 正規化L2距離 [0, 1] を想定
-# - meta_penalty: 比率差から算出 [0, 1] を想定
-META_PENALTY_WEIGHT = 6.0
+# META_PENALTY_WEIGHT を 6.0 -> 1.5 に引き下げ:
+#   120分 vs 1分切り抜き (duration_ratio=120) でも FAISS ヒットが候補に昇格できるよう
+META_PENALTY_WEIGHT = 1.5
 WINDOW_ALIGNMENT_WEIGHT = 0.5
-# window-level 正規化距離で一致とみなす閾値 (normalized L2^2)
-# tuned: lower threshold for better recall on borderline families
 WINDOW_DIST_PENALTY = 0.2
-# Phase 1a: 0.04 -> 0.12 に緩和（再エンコード・切り抜き Recall +10-15pt）
 WINDOW_MATCH_DNORM_THRESHOLD = 0.12
-# Phase 1b: 0.10 -> 0.35 に緩和（切り抜き候補の取りこぼし大幅減）
-FINAL_PRIORITY_SCORE_THRESHOLD = 0.35
+# FINAL_PRIORITY_SCORE_THRESHOLD を 0.35 -> 0.65 に拡大:
+#   META_PENALTY_WEIGHT 縮小後も適切なフィルタ効果を維持
+FINAL_PRIORITY_SCORE_THRESHOLD = 0.65
 
 # 定数定義: pHash計算パラメータ
 # pHashサイズを16x16に拡張（情報量4倍、誤検出率大幅低減）
@@ -252,9 +261,13 @@ def get_video_semantic_hash(filepath, cache=None, use_advanced=False):
                 print(f"[ERROR] 有効なフレームが抽出できません: {os.path.basename(path)} (total_frames={total_frames})")
                 return None
 
-            combined_hash = frame_hashes[0]
-            for h in frame_hashes[1:]:
-                combined_hash = imagehash.ImageHash(combined_hash.hash ^ h.hash)
+            # XOR 結合を廃止: A⊕A=0 の自己逆元による情報消去を防ぐ
+            # 多数決 (majority vote) 方式に変更 -> 同一動画の異なる再エンコード版で安定したハッシュを生成
+            bits_matrix = np.vstack([
+                np.asarray(h.hash, dtype=np.float32).flatten() for h in frame_hashes
+            ])
+            majority = (bits_matrix.mean(axis=0) >= 0.5).reshape(PHASH_SIZE, PHASH_SIZE)
+            combined_hash = imagehash.ImageHash(majority)
 
             print(f"[DEBUG] 動画pHash成功: {os.path.basename(path)}, frames={len(frame_hashes)}, hash={str(combined_hash)[:16]}...")
             if cache is not None and hasattr(cache, 'set_phash'):
@@ -519,8 +532,10 @@ def _meta_penalty(meta1, meta2) -> float:
         p_dur = to_penalty(duration_ratio)
         p_res = to_penalty(resolution_ratio)
         p_size = to_penalty(size_ratio)
-        # 再エンコード耐性のため size の重みは弱くする
-        penalty = 0.45 * p_dur + 0.45 * p_res + 0.10 * p_size
+        # duration の重みを大幅引き下げ: 120分 vs 1分切り抜き (ratio=120) でも
+        # FAISS が発見した候補をペナルティで消さないようにする。
+        # 解像度差を重視: 切り抜きでも解像度は変わらないことが多い。
+        penalty = 0.15 * p_dur + 0.70 * p_res + 0.15 * p_size
         return max(0.0, min(penalty, 1.0))
     except Exception:
         return 0.5
@@ -711,51 +726,59 @@ def find_partial_duplicate_video_groups(
             pass
 
         # If no FAISS neighbors were provided, attempt local FAISS query as fallback
+        # multi_vector_query を使用: 全ウィンドウベクトルで投票集計
+        # → 120分動画 vs 1分切り抜きで 1分側の全6ウィンドウが120分側のウィンドウをヒット
         try:
             if (not faiss_neighbors or not idx_map) and _local_idx is not None and _local_id_list is not None:
-                # get first window vector for vf
                 rec = dup_db.get_file_by_path(vf)
                 if rec:
                     wrows = dup_db.get_window_features_for_file(rec['file_id'])
                     if wrows:
-                        v = None
-                        try:
-                            v = fi._bytes_to_vector(wrows[0]['vec'])
-                        except Exception:
-                            v = None
-                        if v is not None:
-                            neigh = fi.query_index(_local_idx, _local_id_list, v, k=FAISS_CANDIDATES_PER_FILE)
-                            added = 0
-                            for wid, fid2, dist in neigh:
+                        all_vecs = []
+                        for wr in wrows:
+                            _v = None
+                            try:
+                                _v = fi._bytes_to_vector(wr['vec'])
+                            except Exception:
+                                pass
+                            if _v is not None:
+                                all_vecs.append(_v)
+                        if all_vecs:
+                            try:
+                                vecs_mat = np.vstack(all_vecs).astype(np.float32)
+                            except Exception:
+                                vecs_mat = None
+                            if vecs_mat is not None:
+                                # multi_vector_query: 全ウィンドウで集票
+                                mv_results = fi.multi_vector_query(
+                                    _local_idx, _local_id_list, vecs_mat,
+                                    k_per_vec=max(5, FAISS_CANDIDATES_PER_FILE // max(len(all_vecs), 1)),
+                                    max_candidates=FAISS_CANDIDATES_PER_FILE * 2,
+                                )
                                 try:
-                                    r2 = dup_db.get_file_by_id(fid2)
-                                    if not r2:
-                                        continue
-                                    npath = r2.get('path')
-                                    # allow operation even when idx_map is None by
-                                    # building a local mapping from the video_files
-                                    # list passed into this function.
-                                    try:
-                                        if idx_map is not None:
-                                            lookup_map = {normalize_path(k): v for k, v in idx_map.items()}
-                                        else:
-                                            lookup_map = {normalize_path(p): ii for ii, p in enumerate(video_files)}
-                                    except Exception:
+                                    if idx_map is not None:
+                                        lookup_map = {normalize_path(k): vv for k, vv in idx_map.items()}
+                                    else:
                                         lookup_map = {normalize_path(p): ii for ii, p in enumerate(video_files)}
-                                    npath_norm = normalize_path(npath) if npath else npath
-                                    if npath_norm not in lookup_map:
-                                        continue
-                                    j = lookup_map[npath_norm]
-                                    if j <= i:
-                                        continue
-                                    if counts.get(j, 0) < candidate_min_shared:
-                                        counts[j] = candidate_min_shared
-                                        added += 1
-                                    faiss_dist_map[j] = _normalized_faiss_distance(dist)
-                                    if added >= FAISS_CANDIDATES_PER_FILE:
-                                        break
                                 except Exception:
-                                    continue
+                                    lookup_map = {normalize_path(p): ii for ii, p in enumerate(video_files)}
+                                for fid2, vote_cnt, min_dist in mv_results:
+                                    try:
+                                        r2 = dup_db.get_file_by_id(fid2)
+                                        if not r2:
+                                            continue
+                                        npath = r2.get('path')
+                                        npath_norm = normalize_path(npath) if npath else npath
+                                        if npath_norm not in lookup_map:
+                                            continue
+                                        j = lookup_map[npath_norm]
+                                        if j <= i:
+                                            continue
+                                        if counts.get(j, 0) < candidate_min_shared:
+                                            counts[j] = candidate_min_shared
+                                        faiss_dist_map[j] = _normalized_faiss_distance(min_dist)
+                                    except Exception:
+                                        continue
         except Exception:
             pass
 
@@ -1687,39 +1710,50 @@ def find_duplicates_in_folder(
                     id_to_path[rec['file_id']] = rec['path']
 
                 # for each video in our set, query neighbors if it has a stored vector
+                # multi_vector_query で全ウィンドウを投票集計:
+                # 1分切り抜きの6ウィンドウが120分動画の720ウィンドウにヒットしやすくなる
                 for v in video_files_all:
                     try:
                         rec = dup_db.get_file_by_path(v)
                         if not rec:
                             continue
                         fid = rec['file_id']
-                        feat = dup_db.get_feature(fid)
-                        if not feat or not feat.get('vec'):
-                            continue
-                        vec = fi._bytes_to_vector(feat['vec'])
-                        if vec is None:
-                            continue
-                        neighbors = fi.query_index(idx_obj, id_list, vec, k=FAISS_CANDIDATES_PER_FILE)
-                        # aggregate by file_id: collect distances per file
-                        cand_map = {}
-                        for wid, fid2, dist in neighbors:
-                            p = id_to_path.get(fid2)
-                            if not p or p == v:
+                        wrows_v = dup_db.get_window_features_for_file(fid)
+                        if not wrows_v:
+                            # window vecs なければ aggregated vec にフォールバック
+                            feat = dup_db.get_feature(fid)
+                            if not feat or not feat.get('vec'):
                                 continue
-                            cand_map.setdefault(p, []).append(float(dist))
+                            single_vec = fi._bytes_to_vector(feat['vec'])
+                            if single_vec is None:
+                                continue
+                            all_vecs_q = single_vec.reshape(1, -1)
+                        else:
+                            tmp_q = []
+                            for _wr in wrows_v:
+                                _vv = fi._bytes_to_vector(_wr['vec'])
+                                if _vv is not None:
+                                    tmp_q.append(_vv)
+                            if not tmp_q:
+                                continue
+                            all_vecs_q = np.vstack(tmp_q).astype(np.float32)
 
-                        # produce sorted list by average distance (lower better)
+                        # 全ウィンドウで集票クエリ
+                        mv_res = fi.multi_vector_query(
+                            idx_obj, id_list, all_vecs_q,
+                            k_per_vec=max(5, FAISS_CANDIDATES_PER_FILE // max(all_vecs_q.shape[0], 1)),
+                            max_candidates=FAISS_CANDIDATES_PER_FILE,
+                        )
                         neigh_paths = []
-                        for pth, dlist in cand_map.items():
-                            avgd = sum(dlist) / max(1, len(dlist))
-                            neigh_paths.append((pth, avgd, len(dlist)))
+                        for _fid2, _vote, _mdist in mv_res:
+                            _p = id_to_path.get(_fid2)
+                            if not _p or _p == v:
+                                continue
+                            neigh_paths.append((_p, float(_mdist), int(_vote)))
 
                         if neigh_paths:
                             neigh_paths.sort(key=lambda x: (x[1], -x[2]))
-                            # trim to FAISS_CANDIDATES_PER_FILE
-                            neigh_paths = neigh_paths[:FAISS_CANDIDATES_PER_FILE]
-                            # store tuples (path, avg_dist, matches)
-                            faiss_neighbors[v] = neigh_paths
+                            faiss_neighbors[v] = neigh_paths[:FAISS_CANDIDATES_PER_FILE]
                     except Exception:
                         continue
                 # persist updated index
@@ -1729,6 +1763,48 @@ def find_duplicates_in_folder(
                     pass
             except Exception:
                 faiss_neighbors = {}
+
+            # ----------------------------------------------------------------
+            # 音声ウィンドウ抽出 (Audio fingerprint)
+            # 120分動画 vs 1分切り抜き検出の主要シグナル
+            # ----------------------------------------------------------------
+            # path -> list[np.ndarray (64,)]  (各ウィンドウの音声スペクトルベクトル)
+            audio_vecs: dict[str, list] = {}
+            if _AUDIO_AVAILABLE and _afp is not None:
+                try:
+                    _audio_to_process = []
+                    for v in video_files_all:
+                        try:
+                            rec = dup_db.get_file_by_path(v)
+                            if rec and dup_db.has_audio_windows(rec['file_id']):
+                                rows = dup_db.get_audio_windows_for_file(rec['file_id'])
+                                vv = [np.frombuffer(r['vec'], dtype=np.float32).copy() for r in rows]
+                                if vv:
+                                    audio_vecs[v] = vv
+                                    continue
+                        except Exception:
+                            pass
+                        _audio_to_process.append(v)
+
+                    # 未キャッシュ分を抽出 (並列化なし: FFmpeg 自体が並列)
+                    for v in _audio_to_process:
+                        try:
+                            windows = _afp.extract_audio_windows(v)
+                            if windows:
+                                vv = [w[3] for w in windows]
+                                audio_vecs[v] = vv
+                                try:
+                                    rec = dup_db.get_file_by_path(v)
+                                    if rec:
+                                        dup_db.upsert_audio_windows(rec['file_id'], windows)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                    if audio_vecs:
+                        print(f"[AUDIO] 音声ウィンドウ取得完了: {len(audio_vecs)}ファイル")
+                except Exception as _ae:
+                    print(f"[AUDIO] 音声指紋抽出でエラー (続行): {_ae}")
 
             # ----------------------------------------------------------------
             # CLIP-HNSW candidate enrichment
@@ -1986,13 +2062,29 @@ def find_duplicates_in_folder(
                             if pair_key in processed_clip_pairs:
                                 continue
                             processed_clip_pairs.add(pair_key)
-                            # quick CLIP filter
+
+                            # --- 音声ハード受容 (最優先) ---
+                            # compare_audio >= AUDIO_HARD_ACCEPT なら 4-metric 不要で直接 union
+                            if audio_vecs and v in audio_vecs and v2 in audio_vecs:
+                                try:
+                                    a_sim = _afp.compare_audio(audio_vecs[v], audio_vecs[v2])  # type: ignore[union-attr]
+                                    if float(a_sim) >= AUDIO_HARD_ACCEPT:
+                                        union(idx_map[v], idx_map[v2])
+                                        continue
+                                except Exception:
+                                    a_sim = 0.5
+                            else:
+                                a_sim = 0.5  # unknown → neutral default
+
+                            # quick CLIP filter (120:1 ではここをパスしない可能性あり)
                             vec_v2 = clip_vecs.get(v2)
                             if vec_v2 is None:
                                 continue
                             clip_cos = float(np.dot(vec_v, vec_v2))  # already L2-normalised
                             clip_sim = (clip_cos + 1.0) / 2.0        # map [-1,1] -> [0,1]
-                            if clip_sim < 0.72:
+                            # 音声が中程度なら CLIP フィルタを緩和
+                            clip_threshold = 0.62 if float(a_sim) >= 0.50 else 0.72
+                            if clip_sim < clip_threshold:
                                 continue
                             # window DTW score
                             dtw_score = 0.5  # neutral default
@@ -2033,25 +2125,60 @@ def find_duplicates_in_folder(
                                         phash_sim = max(0.0, 1.0 - avg_d / (PHASH_SIZE * PHASH_SIZE))
                             except Exception:
                                 pass
-                            # meta similarity (duration ratio)
+                            # meta similarity: 解像度中心, duration は切り抜き検出では信頼しない
                             meta_sim = 0.7
                             try:
                                 meta_v = get_video_metadata(v, cache=None)
                                 meta_v2 = get_video_metadata(v2, cache=None)
                                 if meta_v and meta_v2:
-                                    d1 = meta_v.get('duration', 0) or 0
-                                    d2 = meta_v2.get('duration', 0) or 0
-                                    if d1 > 0 and d2 > 0:
-                                        r = min(d1, d2) / max(d1, d2)
-                                        meta_sim = float(r)
+                                    w1 = meta_v.get('width') or 0
+                                    h1 = meta_v.get('height') or 0
+                                    w2 = meta_v2.get('width') or 0
+                                    h2 = meta_v2.get('height') or 0
+                                    d1 = float(meta_v.get('duration', 0) or 0)
+                                    d2 = float(meta_v2.get('duration', 0) or 0)
+                                    # 解像度類似度 (切り抜きでも変わらないことが多い)
+                                    if w1 and w2 and h1 and h2:
+                                        r_res = min(float(w1)/w2, float(w2)/w1) * min(float(h1)/h2, float(h2)/h1)
+                                    else:
+                                        r_res = 0.8
+                                    # duration 類似度 (切り抜きは比率が極端に異なる → weight 低め)
+                                    r_dur = (min(d1, d2) / max(d1, d2)) if d1 > 0 and d2 > 0 else 0.7
+                                    meta_sim = 0.25 * r_dur + 0.75 * r_res
                             except Exception:
                                 pass
-                            final_score = (W_CLIP * clip_sim + W_WINDOW * dtw_score
+                            # 5-metric score (CLIP + Audio + Window + pHash + Meta)
+                            final_score = (W_CLIP * clip_sim + W_AUDIO * float(a_sim)
+                                           + W_WINDOW * dtw_score
                                            + W_PHASH * phash_sim + W_META * meta_sim)
                             if final_score >= FINAL_MULTI_SCORE_THRESHOLD:
                                 union(idx_map[v], idx_map[v2])
                 except Exception as _ms_err:
-                    print(f"[CLIP] 4-metricスコアリングでエラー (続行): {_ms_err}")
+                    print(f"[CLIP] 5-metricスコアリングでエラー (続行): {_ms_err}")
+
+            # ----------------------------------------------------------------
+            # 音声ハード受容 (CLIP HNSW 候補外の 120:1 ペアを補足)
+            # audio_vecs があり FAISS 候補にあがったペアに対し音声で直接 union
+            # ----------------------------------------------------------------
+            if audio_vecs and _afp is not None:
+                try:
+                    for v in video_files_all:
+                        av = audio_vecs.get(v)
+                        if not av or v not in idx_map:
+                            continue
+                        for n_item in faiss_neighbors.get(v, []):
+                            try:
+                                v2 = n_item[0] if isinstance(n_item, (tuple, list)) else n_item
+                                if v2 not in idx_map or v2 not in audio_vecs:
+                                    continue
+                                av2 = audio_vecs[v2]
+                                a_sim = _afp.compare_audio(av, av2)
+                                if float(a_sim) >= AUDIO_HARD_ACCEPT:
+                                    union(idx_map[v], idx_map[v2])
+                            except Exception:
+                                continue
+                except Exception as _ae2:
+                    print(f"[AUDIO] ハード受容ステージでエラー (続行): {_ae2}")
 
             if len(video_files_all) <= 12000:
                 extra_groups = find_partial_duplicate_video_groups(

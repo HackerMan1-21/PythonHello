@@ -477,3 +477,52 @@ def query_index(
         fid = int(item[1]) if isinstance(item, (tuple, list)) else int(item)
         res.append((wid, fid, float(dists[int(i)])))
     return res
+
+
+def multi_vector_query(
+    index_obj: Any,
+    id_list: List[Tuple[int, int]],
+    vecs: np.ndarray,
+    k_per_vec: int = 10,
+    max_candidates: int = 200,
+) -> List[Tuple[int, int, float]]:
+    """全ウィンドウベクトルで FAISS をクエリし、file_id ごとに集票して候補リストを返す.
+
+    1分切り抜き (6 ウィンドウ) vs 120分動画 (720 ウィンドウ):
+     - 6 回の FAISS クエリで 720 本のウィンドウを探索
+     - 120分動画の file_id に票が集まり min_dist も低くなる
+     - 単一ベクトルクエリよりも大幅に Recall が向上する
+
+    Parameters
+    ----------
+    vecs         : float32 array (n_vecs, dim)  — クエリファイルの全ウィンドウ
+    k_per_vec    : int — 1クエリあたりの近傍数
+    max_candidates: int — 返す候補の上限数
+
+    Returns
+    -------
+    list of (file_id, vote_count, min_dist) sorted by (-vote_count, min_dist)
+    """
+    if vecs is None or len(vecs) == 0:
+        return []
+    if vecs.ndim == 1:
+        vecs = vecs.reshape(1, -1)
+
+    # file_id -> {'count': int, 'min_dist': float}
+    vote_map: dict = {}
+
+    for i in range(vecs.shape[0]):
+        neighbors = query_index(index_obj, id_list, vecs[i], k=k_per_vec)
+        for _, fid, dist in neighbors:
+            if fid not in vote_map:
+                vote_map[fid] = {'count': 0, 'min_dist': float('inf')}
+            vote_map[fid]['count'] += 1
+            if dist < vote_map[fid]['min_dist']:
+                vote_map[fid]['min_dist'] = dist
+
+    results = [
+        (fid, info['count'], info['min_dist'])
+        for fid, info in vote_map.items()
+    ]
+    results.sort(key=lambda x: (-x[1], x[2]))
+    return results[:max_candidates]

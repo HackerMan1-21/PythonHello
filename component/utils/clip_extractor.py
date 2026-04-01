@@ -245,6 +245,64 @@ def extract_clip_features_batch(
     return results
 
 
+def extract_clip_frame_features(
+    path: str,
+    num_frames: int = 30,
+) -> Optional[np.ndarray]:
+    """Extract per-frame CLIP vectors — NOT averaged.
+
+    Unlike extract_clip_features() which returns a single averaged 512-d vector,
+    this function returns an (N, 512) array with one row per frame.
+
+    Used for temporal DTW comparison: the 1-min clip's frame sequence is
+    matched against the 120-min video's frame sequence via subsequence DTW.
+
+    Parameters
+    ----------
+    num_frames : int
+        Number of frames to sample. Default 30 gives dense coverage of a
+        1-min clip (one frame per 2 sec) while being reasonable for long videos.
+
+    Returns
+    -------
+    np.ndarray of shape (N, 512) | None
+    """
+    import torch
+
+    if not _ensure_loaded():
+        return None
+
+    raw_frames = _sample_frames(path, num_frames)
+    if not raw_frames:
+        return None
+
+    assert _preprocess is not None
+    assert _model is not None
+    assert _device is not None
+
+    frame_features: List[np.ndarray] = []
+    try:
+        for frame in raw_frames:
+            frame = _auto_crop_black_bars(frame)
+            pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            tensor = _preprocess(pil_img).unsqueeze(0).to(_device)
+            if _fp16_active:
+                tensor = tensor.half()
+            with torch.no_grad():
+                feat = _model.encode_image(tensor).float()
+                feat = feat / feat.norm(dim=-1, keepdim=True)
+            frame_features.append(feat.cpu().numpy().astype(np.float32)[0])  # (512,)
+    except Exception:
+        return None
+    finally:
+        if _device == 'cuda':
+            torch.cuda.empty_cache()
+
+    if not frame_features:
+        return None
+    return np.vstack(frame_features)  # (N, 512)
+
+
 # ---------------------------------------------------------------------------
 # Similarity helpers
 # ---------------------------------------------------------------------------

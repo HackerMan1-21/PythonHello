@@ -71,9 +71,23 @@ def init_db():
             FOREIGN KEY(file_id) REFERENCES files(file_id) ON DELETE CASCADE
         )''')
 
+        # Audio fingerprint windows (64-d FFT-based spectral vectors)
+        # 120分動画 vs 1分切り抜き検出のためのサブシーケンス音声照合用
+        cur.execute('''
+        CREATE TABLE IF NOT EXISTS audio_windows (
+            aw_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id INTEGER NOT NULL,
+            window_idx INTEGER NOT NULL,
+            vec BLOB NOT NULL,
+            start_sec REAL,
+            end_sec REAL,
+            FOREIGN KEY(file_id) REFERENCES files(file_id) ON DELETE CASCADE
+        )''')
+
         cur.execute('CREATE INDEX IF NOT EXISTS idx_files_mtime_size ON files(mtime_ns, size_bytes)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_pair_a ON pair_results(file_id_a)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_pair_b ON pair_results(file_id_b)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_aw_file ON audio_windows(file_id)')
         # WAL mode for better concurrent read/write performance
         cur.execute('PRAGMA journal_mode=WAL')
         conn.commit()
@@ -278,8 +292,62 @@ def delete_file_and_related(path: str):
         cur = conn.cursor()
         cur.execute('DELETE FROM video_features WHERE file_id=?', (fid,))
         cur.execute('DELETE FROM pair_results WHERE file_id_a=? OR file_id_b=?', (fid, fid))
+        cur.execute('DELETE FROM audio_windows WHERE file_id=?', (fid,))
         cur.execute('DELETE FROM files WHERE file_id=?', (fid,))
         conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Audio windows CRUD
+# ---------------------------------------------------------------------------
+
+def upsert_audio_windows(file_id: int, windows: list) -> None:
+    """Replace audio window rows for a file.
+
+    windows: list of (window_idx, start_sec, end_sec, vec)
+             vec can be np.ndarray or bytes.
+    """
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute('DELETE FROM audio_windows WHERE file_id=?', (file_id,))
+        for item in windows:
+            widx, ss, es, vec = item[0], item[1], item[2], item[3]
+            try:
+                import numpy as _np
+                if isinstance(vec, _np.ndarray):
+                    vec_bytes = vec.astype(_np.float32).tobytes()
+                else:
+                    vec_bytes = bytes(vec)
+            except Exception:
+                vec_bytes = bytes(vec)
+            cur.execute(
+                'INSERT INTO audio_windows(file_id, window_idx, vec, start_sec, end_sec)'
+                ' VALUES(?,?,?,?,?)',
+                (file_id, int(widx), vec_bytes, float(ss), float(es)),
+            )
+        conn.commit()
+
+
+def get_audio_windows_for_file(file_id: int) -> List[Dict[str, Any]]:
+    """Return all audio window rows for a file, ordered by window_idx."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT aw_id, file_id, window_idx, vec, start_sec, end_sec'
+            ' FROM audio_windows WHERE file_id=? ORDER BY window_idx',
+            (file_id,),
+        )
+        rows = cur.fetchall()
+        keys = ['aw_id', 'file_id', 'window_idx', 'vec', 'start_sec', 'end_sec']
+        return [dict(zip(keys, r)) for r in rows]
+
+
+def has_audio_windows(file_id: int) -> bool:
+    """Return True if audio windows are cached for this file."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute('SELECT 1 FROM audio_windows WHERE file_id=? LIMIT 1', (file_id,))
+        return cur.fetchone() is not None
 
 
 def all_files() -> List[Dict[str, Any]]:
